@@ -22,16 +22,17 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 - ✅ Type-safe implementation with Pydantic
 - 🎨 Rich output formatting with customizable themes
 
-
-
-
-https://github.com/user-attachments/assets/991c81ff-d260-4e75-86d3-cedb679a3acf
-
-
-
 ## 📦 Installation
 
-1. Create a directory for your [Cline](https://github.com/cline/cline) MCP servers (if you haven't already):
+### Prerequisites
+
+- Python 3.10 or higher
+- Git
+- A Proxmox server with API access
+
+### Cline Installation
+
+1. Create a directory for your MCP servers:
    ```bash
    mkdir -p ~/Documents/Cline/MCP
    cd ~/Documents/Cline/MCP
@@ -41,20 +42,22 @@ https://github.com/user-attachments/assets/991c81ff-d260-4e75-86d3-cedb679a3acf
    ```bash
    # Clone the repository
    git clone https://github.com/canvrno/ProxmoxMCP.git
-
-   # Install in development mode with dependencies
-   pip install -e "proxmox-mcp[dev]"
-   ```
-
-3. Create and verify your configuration:
-   ```bash
-   # Create config directory in the project root
    cd ProxmoxMCP
-   mkdir proxmox-config
-   cd proxmox-config
+
+   # Install UV if not already installed
+   pip install uv
+
+   # Create and activate virtual environment, then install dependencies
+   uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
    ```
 
-   Create `config.json`:
+3. Create and configure Proxmox settings:
+   ```bash
+   # Create config directory
+   mkdir -p proxmox-config
+   ```
+
+   Create `proxmox-config/config.json`:
    ```json
    {
        "proxmox": {
@@ -76,57 +79,91 @@ https://github.com/user-attachments/assets/991c81ff-d260-4e75-86d3-cedb679a3acf
    }
    ```
 
-   Important: Verify your configuration:
-   - Ensure the config file exists at the specified path
-   - The `host` field must be properly set to your Proxmox server's hostname or IP address
-   - You can validate your config by running:
-     ```bash
-     python3 -c "import json; print(json.load(open('config.json'))['proxmox']['host'])"
-     ```
-   - This should print your Proxmox host address. If it prints an empty string or raises an error, your config needs to be fixed.
-
-4. The server provides these tools:
-   - `get_nodes`: List all nodes in the cluster
-   - `get_node_status`: Get detailed status of a node
-   - `get_vms`: List all VMs
-   - `get_storage`: List available storage
-   - `get_cluster_status`: Get cluster status
-   - `execute_vm_command`: Run commands in VM consoles
-
-Requirements:
-- Python 3.9 or higher
-
-## 🛠️ Development Setup
-
-1. Install UV:
-   ```bash
-   pip install uv
+4. Add to Cline MCP settings:
+   Edit `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
+   ```json
+   {
+     "mcpServers": {
+       "github.com/canvrno/ProxmoxMCP": {
+         "command": "/absolute/path/to/ProxmoxMCP/.venv/bin/python",
+         "args": [
+           "-m",
+           "proxmox_mcp.server"
+         ],
+         "cwd": "/absolute/path/to/ProxmoxMCP",
+         "env": {
+           "PROXMOX_MCP_CONFIG": "/absolute/path/to/ProxmoxMCP/proxmox-config/config.json"
+         },
+         "disabled": false,
+         "autoApprove": []
+       }
+     }
+   }
    ```
 
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/canvrno/ProxmoxMCP.git
-   cd proxmox-mcp
-   ```
+   Important: Replace `/absolute/path/to/ProxmoxMCP` with your actual installation path.
 
-3. Create and activate virtual environment:
-   ```bash
-   # Create venv
-   uv venv
+### For Manual Installation
 
-   # Activate venv (Windows)
-   .venv\Scripts\activate
-   # OR Activate venv (Unix/MacOS)
+1. Create and activate a virtual environment:
+   ```bash
+   # Linux/macOS
+   python3 -m venv .venv
    source .venv/bin/activate
+
+   # Windows (PowerShell)
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
    ```
 
-4. Install dependencies:
+2. Install dependencies:
    ```bash
-   # Install with development dependencies
-   uv pip install -e ".[dev]"
-   # OR install only runtime dependencies
-   uv pip install -e .
+   # Install build tools
+   pip install --upgrade pip build wheel setuptools
+
+   # Install MCP SDK first (required)
+   pip install git+https://github.com/modelcontextprotocol/python-sdk.git
+
+   # Install package with dev dependencies
+   pip install -e ".[dev]"
    ```
+
+3. Create configuration:
+   ```bash
+   # Create config directory
+   mkdir -p proxmox-config
+
+   # Copy example config
+   cp config/config.example.json proxmox-config/config.json
+
+   # Edit the config with your Proxmox details
+   # See Configuration section below
+   ```
+
+### Verifying Installation
+
+1. Check Python environment:
+   ```bash
+   python -c "import proxmox_mcp; print('Installation OK')"
+   ```
+
+2. Run the tests:
+   ```bash
+   pytest
+   ```
+
+3. Verify configuration:
+   ```bash
+   # Linux/macOS
+   PROXMOX_MCP_CONFIG="proxmox-config/config.json" python -m proxmox_mcp.server
+
+   # Windows (PowerShell)
+   $env:PROXMOX_MCP_CONFIG="proxmox-config\config.json"; python -m proxmox_mcp.server
+   ```
+
+   You should see either:
+   - A successful connection to your Proxmox server
+   - Or a connection error (if Proxmox details are incorrect)
 
 ## ⚙️ Configuration
 
@@ -139,36 +176,15 @@ Requirements:
    - Uncheck "Privilege Separation" if you want full access
    - Save and copy both the token ID and secret
 
-### Server Configuration
-Configure the server using either a JSON file or environment variables:
+### Configuration Methods
 
-#### Using JSON Configuration
+#### Using JSON Configuration (Recommended)
 1. Copy the example configuration:
    ```bash
-   cp config/config.example.json config/config.json
+   cp config/config.example.json proxmox-config/config.json
    ```
 
-2. Edit `config/config.json`:
-   ```json
-   {
-       "proxmox": {
-           "host": "your-proxmox-host",
-           "port": 8006,
-           "verify_ssl": true,
-           "service": "PVE"
-       },
-       "auth": {
-           "user": "username@pve",
-           "token_name": "your-token-name",
-           "token_value": "your-token-value"
-       },
-       "logging": {
-           "level": "INFO",
-           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-           "file": "proxmox_mcp.log"
-       }
-   }
-   ```
+2. Edit `proxmox-config/config.json` with your settings (see format above)
 
 #### Using Environment Variables
 Set the following environment variables:
@@ -188,7 +204,36 @@ LOG_FORMAT=%(asctime)s...         # Default: standard format
 LOG_FILE=proxmox_mcp.log         # Default: None (stdout)
 ```
 
-## 🔧 Available Tools
+## 🚀 Running the Server
+
+### Development Mode
+For testing and development:
+```bash
+# Activate virtual environment first
+source .venv/bin/activate  # Linux/macOS
+# OR
+.\.venv\Scripts\Activate.ps1  # Windows
+
+# Run the server
+python -m proxmox_mcp.server
+```
+
+### Claude Desktop Integration
+To install the server in Claude Desktop:
+```bash
+# Basic installation
+mcp install proxmox_mcp/server.py
+
+# Installation with custom name and environment variables
+mcp install proxmox_mcp/server.py \
+  --name "Proxmox Manager" \
+  -v PROXMOX_HOST=your-host \
+  -v PROXMOX_USER=username@pve \
+  -v PROXMOX_TOKEN_NAME=your-token \
+  -v PROXMOX_TOKEN_VALUE=your-secret
+```
+
+# 🔧 Available Tools
 
 The server provides the following MCP tools for interacting with Proxmox:
 
@@ -396,62 +441,9 @@ Execute a command in a VM's console using QEMU Guest Agent.
   - Returns error if command execution fails
   - Includes command output even if command returns non-zero exit code
 
-## 🚀 Running the Server
-
-### Development Mode
-For testing and development, use the MCP development server:
-```bash
-mcp dev proxmox_mcp/server.py
-```
-
-### Claude Desktop Integration
-To install the server in Claude Desktop:
-```bash
-# Basic installation
-mcp install proxmox_mcp/server.py
-
-# Installation with custom name and environment variables
-mcp install proxmox_mcp/server.py \
-  --name "Proxmox Manager" \
-  -v PROXMOX_HOST=your-host \
-  -v PROXMOX_USER=username@pve \
-  -v PROXMOX_TOKEN_NAME=your-token \
-  -v PROXMOX_TOKEN_VALUE=your-secret
-```
-
-### Direct Execution
-Run the server directly:
-```bash
-python -m proxmox_mcp.server
-```
-
-## ⚠️ Error Handling
-
-The server implements comprehensive error handling:
-
-- Authentication Errors: When token authentication fails
-- Connection Errors: When unable to connect to Proxmox
-- Validation Errors: When tool parameters are invalid
-- API Errors: When Proxmox API calls fail
-
-All errors are properly logged and returned with descriptive messages.
-
-## 📝 Logging
-
-Logging can be configured through the config file or environment variables:
-
-- Log Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
-- Output: File or stdout
-- Format: Customizable format string
-
-Example log output:
-```
-2025-02-18 19:15:23,456 - proxmox-mcp - INFO - Server started
-2025-02-18 19:15:24,789 - proxmox-mcp - INFO - Connected to Proxmox host
-2025-02-18 19:15:25,123 - proxmox-mcp - DEBUG - Tool called: get_nodes
-```
-
 ## 👨‍💻 Development
+
+After activating your virtual environment:
 
 - Run tests: `pytest`
 - Format code: `black .`
@@ -474,9 +466,9 @@ proxmox-mcp/
 ├── tests/                     # Test suite
 ├── config/
 │   └── config.example.json    # Configuration template
+├── setup.sh                   # Unix setup script
+├── setup.ps1                  # Windows setup script
 ├── pyproject.toml            # Project metadata and dependencies
-├── requirements.in           # Core dependencies
-├── requirements-dev.in       # Development dependencies
 └── LICENSE                   # MIT License
 ```
 
