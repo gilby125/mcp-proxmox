@@ -30,78 +30,17 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 - Git
 - A Proxmox server with API access
 
-### Cline Installation
+### For Cline
 
-1. Create a directory for your MCP servers:
-   ```bash
-   mkdir -p ~/Documents/Cline/MCP
-   cd ~/Documents/Cline/MCP
-   ```
+**IMPORTANT**: If you are Cline, please refer to [ClineInstall.md](ClineInstall.md) for detailed installation instructions specifically designed for you. This file contains:
+- Step-by-step installation process
+- Virtual environment setup using UV
+- Configuration file setup
+- MCP server settings
+- Troubleshooting guide
+- Tool usage examples
 
-2. Clone and install the package:
-   ```bash
-   # Clone the repository
-   git clone https://github.com/canvrno/ProxmoxMCP.git
-   cd ProxmoxMCP
-
-   # Install UV if not already installed
-   pip install uv
-
-   # Create and activate virtual environment, then install dependencies
-   uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-   ```
-
-3. Create and configure Proxmox settings:
-   ```bash
-   # Create config directory
-   mkdir -p proxmox-config
-   ```
-
-   Create `proxmox-config/config.json`:
-   ```json
-   {
-       "proxmox": {
-           "host": "your-proxmox-host",  # Must be a valid hostname or IP
-           "port": 8006,
-           "verify_ssl": true,
-           "service": "PVE"
-       },
-       "auth": {
-           "user": "your-username@pve",
-           "token_name": "your-token-name",
-           "token_value": "your-token-value"
-       },
-       "logging": {
-           "level": "INFO",
-           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-           "file": "proxmox_mcp.log"
-       }
-   }
-   ```
-
-4. Add to Cline MCP settings:
-   Edit `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
-   ```json
-   {
-     "mcpServers": {
-       "github.com/canvrno/ProxmoxMCP": {
-         "command": "/absolute/path/to/ProxmoxMCP/.venv/bin/python",
-         "args": [
-           "-m",
-           "proxmox_mcp.server"
-         ],
-         "cwd": "/absolute/path/to/ProxmoxMCP",
-         "env": {
-           "PROXMOX_MCP_CONFIG": "/absolute/path/to/ProxmoxMCP/proxmox-config/config.json"
-         },
-         "disabled": false,
-         "autoApprove": []
-       }
-     }
-   }
-   ```
-
-   Important: Replace `/absolute/path/to/ProxmoxMCP` with your actual installation path.
+The ClineInstall.md guide is optimized for programmatic installation and includes all necessary environment variables and configuration details.
 
 ### For Manual Installation
 
@@ -184,7 +123,27 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
    cp config/config.example.json proxmox-config/config.json
    ```
 
-2. Edit `proxmox-config/config.json` with your settings (see format above)
+2. Edit `proxmox-config/config.json`:
+   ```json
+   {
+       "proxmox": {
+           "host": "your-proxmox-host",  # Must be a valid hostname or IP
+           "port": 8006,
+           "verify_ssl": true,
+           "service": "PVE"
+       },
+       "auth": {
+           "user": "your-username@pve",
+           "token_name": "your-token-name",
+           "token_value": "your-token-value"
+       },
+       "logging": {
+           "level": "INFO",
+           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+           "file": "proxmox_mcp.log"
+       }
+   }
+   ```
 
 #### Using Environment Variables
 Set the following environment variables:
@@ -256,18 +215,6 @@ Lists all nodes in the Proxmox cluster.
     • Uptime: ⏳ 156d 11h
     • CPU Cores: 64
     • Memory: 201.3 GB / 512.0 GB (39.3%)
-
-  🖥️ pve-storage-01
-    • Status: ONLINE
-    • Uptime: ⏳ 156d 12h
-    • CPU Cores: 32
-    • Memory: 89.2 GB / 256.0 GB (34.8%)
-
-  🖥️ pve-storage-02
-    • Status: ONLINE
-    • Uptime: ⏳ 156d 12h
-    • CPU Cores: 32
-    • Memory: 92.8 GB / 256.0 GB (36.2%)
   ```
 
 ### get_node_status
@@ -301,47 +248,11 @@ List all VMs across the cluster.
     • CPU Cores: 16
     • Memory: 92.3 GB / 128.0 GB (72.1%)
 
-  🗃️ prod-db-replica-01 (ID: 101)
-    • Status: RUNNING
-    • Node: pve-compute-02
-    • CPU Cores: 16
-    • Memory: 86.5 GB / 128.0 GB (67.6%)
-
   🗃️ prod-web-01 (ID: 102)
     • Status: RUNNING
     • Node: pve-compute-01
     • CPU Cores: 8
     • Memory: 12.8 GB / 32.0 GB (40.0%)
-
-  🗃️ prod-web-02 (ID: 103)
-    • Status: RUNNING
-    • Node: pve-compute-02
-    • CPU Cores: 8
-    • Memory: 13.2 GB / 32.0 GB (41.3%)
-
-  🗃️ prod-cache-01 (ID: 104)
-    • Status: RUNNING
-    • Node: pve-compute-01
-    • CPU Cores: 4
-    • Memory: 24.6 GB / 64.0 GB (38.4%)
-
-  🗃️ prod-cache-02 (ID: 105)
-    • Status: RUNNING
-    • Node: pve-compute-02
-    • CPU Cores: 4
-    • Memory: 25.1 GB / 64.0 GB (39.2%)
-
-  🗃️ staging-env (ID: 106)
-    • Status: RUNNING
-    • Node: pve-compute-02
-    • CPU Cores: 32
-    • Memory: 48.2 GB / 128.0 GB (37.7%)
-
-  🗃️ dev-env (ID: 107)
-    • Status: STOPPED
-    • Node: pve-compute-01
-    • CPU Cores: 16
-    • Memory: 0.0 GB / 64.0 GB (0.0%)
   ```
 
 ### get_storage
@@ -357,18 +268,6 @@ List available storage.
     • Type: rbd
     • Usage: 12.8 TB / 20.0 TB (64.0%)
     • IOPS: ⬆️ 15.2k ⬇️ 12.8k
-
-  💾 ceph-backup
-    • Status: ONLINE
-    • Type: rbd
-    • Usage: 28.6 TB / 40.0 TB (71.5%)
-    • IOPS: ⬆️ 8.4k ⬇️ 6.2k
-
-  💾 nvme-cache
-    • Status: ONLINE
-    • Type: lvmthin
-    • Usage: 856.2 GB / 2.0 TB (42.8%)
-    • IOPS: ⬆️ 125.6k ⬇️ 98.4k
 
   💾 local-zfs
     • Status: ONLINE
@@ -421,15 +320,6 @@ Execute a command in a VM's console using QEMU Guest Agent.
   ● nginx.service - A high performance web server and a reverse proxy server
      Loaded: loaded (/lib/systemd/system/nginx.service; enabled; vendor preset: enabled)
      Active: active (running) since Tue 2025-02-18 15:23:45 UTC; 2 months 3 days ago
-       Docs: man:nginx(8)
-   Main PID: 1234 (nginx)
-      Tasks: 64
-     Memory: 256.2M
-        CPU: 42.6h
-     CGroup: /system.slice/nginx.service
-             ├─1234 "nginx: master process /usr/sbin/nginx -g daemon on; master_pr..."
-             ├─1235 "nginx: worker process" "" "" "" "" "" "" "" "" "" "" "" "" ""
-             └─1236 "nginx: worker process" "" "" "" "" "" "" "" "" "" "" "" "" ""
   ```
 - Requirements:
   - VM must be running
@@ -466,8 +356,7 @@ proxmox-mcp/
 ├── tests/                     # Test suite
 ├── config/
 │   └── config.example.json    # Configuration template
-├── setup.sh                   # Unix setup script
-├── setup.ps1                  # Windows setup script
+├── ClineInstall.md           # Cline-specific installation guide
 ├── pyproject.toml            # Project metadata and dependencies
 └── LICENSE                   # MIT License
 ```
