@@ -11,13 +11,13 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 
 ## ✨ Features
 
+- 🤖 Full integration with Cline
 - 🛠️ Built with the official MCP SDK
 - 🔒 Secure token-based authentication with Proxmox
 - 🖥️ Tools for managing nodes and VMs
 - 💻 VM console command execution
 - 📝 Configurable logging system
 - ✅ Type-safe implementation with Pydantic
-- 🤖 Full integration with Claude Desktop
 - 🎨 Rich output formatting with customizable themes
 
 
