@@ -83,8 +83,8 @@ Before starting, ensure you have:
            "service": "PVE"               # Optional: Default is PVE
        },
        "auth": {
-           "user": "USER@pve",           # Required: Your Proxmox username
-           "token_name": "TOKEN_NAME",    # Required: API token name
+           "user": "USER@pve",            # Required: Your Proxmox username
+           "token_name": "TOKEN_NAME",    # Required: API token ID
            "token_value": "TOKEN_VALUE"   # Required: API token value
        },
        "logging": {
