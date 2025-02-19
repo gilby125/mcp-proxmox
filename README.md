@@ -22,6 +22,12 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 - ✅ Type-safe implementation with Pydantic
 - 🎨 Rich output formatting with customizable themes
 
+
+
+https://github.com/user-attachments/assets/1b5f42f7-85d5-4918-aca4-d38413b0e82b
+
+
+
 ## 📦 Installation
 
 ### Prerequisites
