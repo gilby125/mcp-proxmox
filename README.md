@@ -1,4 +1,4 @@
-# 🚀 Proxmox MCP Server
+# 🚀 Proxmox Manager - Proxmox MCP Server
 
 ![ProxmoxMCP](https://github.com/user-attachments/assets/e32ab79f-be8a-420c-ab2d-475612150534)
 
