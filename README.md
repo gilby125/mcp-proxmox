@@ -25,58 +25,68 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 ## 📦 Installation
 
 ### Prerequisites
-
+- UV package manager (recommended)
 - Python 3.10 or higher
 - Git
-- A Proxmox server with API access
+- Access to a Proxmox server with API token credentials
 
-### For Cline
+Before starting, ensure you have:
+- [ ] Proxmox server hostname or IP
+- [ ] Proxmox API token (see [API Token Setup](#proxmox-api-token-setup))
+- [ ] UV installed (`pip install uv`)
 
-**IMPORTANT**: If you are Cline, please refer to [ClineInstall.md](ClineInstall.md) for detailed installation instructions specifically designed for you. This file contains:
-- Step-by-step installation process
-- Virtual environment setup using UV
-- Configuration file setup
-- MCP server settings
-- Troubleshooting guide
-- Tool usage examples
+### Option 1: Quick Install (Recommended)
 
-The ClineInstall.md guide is optimized for programmatic installation and includes all necessary environment variables and configuration details.
-
-### For Manual Installation
-
-1. Create and activate a virtual environment:
+1. Clone and set up environment:
    ```bash
-   # Linux/macOS
-   python3 -m venv .venv
-   source .venv/bin/activate
+   # Clone repository
+   cd ~/Documents/Cline/MCP  # For Cline users
+   # OR
+   cd your/preferred/directory  # For manual installation
+   
+   git clone https://github.com/canvrno/ProxmoxMCP.git
+   cd ProxmoxMCP
 
-   # Windows (PowerShell)
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
+   # Create and activate virtual environment
+   uv venv
+   source .venv/bin/activate  # Linux/macOS
+   # OR
+   .\.venv\Scripts\Activate.ps1  # Windows
    ```
 
 2. Install dependencies:
    ```bash
-   # Install build tools
-   pip install --upgrade pip build wheel setuptools
-
-   # Install MCP SDK first (required)
-   pip install git+https://github.com/modelcontextprotocol/python-sdk.git
-
-   # Install package with dev dependencies
-   pip install -e ".[dev]"
+   # Install with development dependencies
+   uv pip install -e ".[dev]"
    ```
 
 3. Create configuration:
    ```bash
-   # Create config directory
+   # Create config directory and copy template
    mkdir -p proxmox-config
-
-   # Copy example config
    cp config/config.example.json proxmox-config/config.json
+   ```
 
-   # Edit the config with your Proxmox details
-   # See Configuration section below
+4. Edit `proxmox-config/config.json`:
+   ```json
+   {
+       "proxmox": {
+           "host": "PROXMOX_HOST",        # Required: Your Proxmox server address
+           "port": 8006,                  # Optional: Default is 8006
+           "verify_ssl": false,           # Optional: Set false for self-signed certs
+           "service": "PVE"               # Optional: Default is PVE
+       },
+       "auth": {
+           "user": "USER@pve",           # Required: Your Proxmox username
+           "token_name": "TOKEN_NAME",    # Required: API token name
+           "token_value": "TOKEN_VALUE"   # Required: API token value
+       },
+       "logging": {
+           "level": "INFO",               # Optional: DEBUG for more detail
+           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+           "file": "proxmox_mcp.log"      # Optional: Log to file
+       }
+   }
    ```
 
 ### Verifying Installation
@@ -115,53 +125,6 @@ The ClineInstall.md guide is optimized for programmatic installation and include
    - Uncheck "Privilege Separation" if you want full access
    - Save and copy both the token ID and secret
 
-### Configuration Methods
-
-#### Using JSON Configuration (Recommended)
-1. Copy the example configuration:
-   ```bash
-   cp config/config.example.json proxmox-config/config.json
-   ```
-
-2. Edit `proxmox-config/config.json`:
-   ```json
-   {
-       "proxmox": {
-           "host": "your-proxmox-host",  # Must be a valid hostname or IP
-           "port": 8006,
-           "verify_ssl": true,
-           "service": "PVE"
-       },
-       "auth": {
-           "user": "your-username@pve",
-           "token_name": "your-token-name",
-           "token_value": "your-token-value"
-       },
-       "logging": {
-           "level": "INFO",
-           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-           "file": "proxmox_mcp.log"
-       }
-   }
-   ```
-
-#### Using Environment Variables
-Set the following environment variables:
-```bash
-# Required
-PROXMOX_HOST=your-host
-PROXMOX_USER=username@pve
-PROXMOX_TOKEN_NAME=your-token-name
-PROXMOX_TOKEN_VALUE=your-token-value
-
-# Optional
-PROXMOX_PORT=8006                  # Default: 8006
-PROXMOX_VERIFY_SSL=true           # Default: true
-PROXMOX_SERVICE=PVE               # Default: PVE
-LOG_LEVEL=INFO                    # Default: INFO
-LOG_FORMAT=%(asctime)s...         # Default: standard format
-LOG_FILE=proxmox_mcp.log         # Default: None (stdout)
-```
 
 ## 🚀 Running the Server
 
@@ -177,20 +140,60 @@ source .venv/bin/activate  # Linux/macOS
 python -m proxmox_mcp.server
 ```
 
-### Claude Desktop Integration
-To install the server in Claude Desktop:
-```bash
-# Basic installation
-mcp install proxmox_mcp/server.py
+### Cline Desktop Integration
 
-# Installation with custom name and environment variables
-mcp install proxmox_mcp/server.py \
-  --name "Proxmox Manager" \
-  -v PROXMOX_HOST=your-host \
-  -v PROXMOX_USER=username@pve \
-  -v PROXMOX_TOKEN_NAME=your-token \
-  -v PROXMOX_TOKEN_VALUE=your-secret
+For Cline users, add this configuration to your MCP settings file (typically at `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
+
+```json
+{
+    "mcpServers": {
+        "github.com/canvrno/ProxmoxMCP": {
+            "command": "/absolute/path/to/ProxmoxMCP/.venv/bin/python",
+            "args": ["-m", "proxmox_mcp.server"],
+            "cwd": "/absolute/path/to/ProxmoxMCP",
+            "env": {
+                "PYTHONPATH": "/absolute/path/to/ProxmoxMCP/src",
+                "PROXMOX_MCP_CONFIG": "/absolute/path/to/ProxmoxMCP/proxmox-config/config.json",
+                "PROXMOX_HOST": "your-proxmox-host",
+                "PROXMOX_USER": "username@pve",
+                "PROXMOX_TOKEN_NAME": "token-name",
+                "PROXMOX_TOKEN_VALUE": "token-value",
+                "PROXMOX_PORT": "8006",
+                "PROXMOX_VERIFY_SSL": "false",
+                "PROXMOX_SERVICE": "PVE",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "disabled": false,
+            "autoApprove": []
+        }
+    }
+}
 ```
+
+To help generate the correct paths, you can use this command:
+```bash
+# This will print the MCP settings with your absolute paths filled in
+python -c "import os; print(f'''{{
+    \"mcpServers\": {{
+        \"github.com/canvrno/ProxmoxMCP\": {{
+            \"command\": \"{os.path.abspath('.venv/bin/python')}\",
+            \"args\": [\"-m\", \"proxmox_mcp.server\"],
+            \"cwd\": \"{os.getcwd()}\",
+            \"env\": {{
+                \"PYTHONPATH\": \"{os.path.abspath('src')}\",
+                \"PROXMOX_MCP_CONFIG\": \"{os.path.abspath('proxmox-config/config.json')}\",
+                ...
+            }}
+        }}
+    }}
+}}''')"
+```
+
+Important:
+- All paths must be absolute
+- The Python interpreter must be from your virtual environment
+- The PYTHONPATH must point to the src directory
+- Restart VSCode after updating MCP settings
 
 # 🔧 Available Tools
 
@@ -354,9 +357,8 @@ proxmox-mcp/
 │       │   └── console/       # VM console operations
 │       └── utils/             # Utilities (auth, logging)
 ├── tests/                     # Test suite
-├── config/
+├── proxmox-config/
 │   └── config.example.json    # Configuration template
-├── ClineInstall.md           # Cline-specific installation guide
 ├── pyproject.toml            # Project metadata and dependencies
 └── LICENSE                   # MIT License
 ```
