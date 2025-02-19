@@ -1,5 +1,7 @@
 # 🚀 Proxmox MCP Server
 
+![ProxmoxMCP](https://github.com/user-attachments/assets/e32ab79f-be8a-420c-ab2d-475612150534)
+
 A Python-based Model Context Protocol (MCP) server for interacting with Proxmox hypervisors, providing a clean interface for managing nodes, VMs, and containers.
 
 ## 🏗️ Built With
