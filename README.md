@@ -20,6 +20,13 @@ A Python-based Model Context Protocol (MCP) server for interacting with Proxmox 
 - 🤖 Full integration with Claude Desktop
 - 🎨 Rich output formatting with customizable themes
 
+
+
+
+https://github.com/user-attachments/assets/991c81ff-d260-4e75-86d3-cedb679a3acf
+
+
+
 ## 📦 Installation
 
 1. Create a directory for your [Cline](https://github.com/cline/cline) MCP servers (if you haven't already):
