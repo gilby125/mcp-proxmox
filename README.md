@@ -73,9 +73,10 @@ Before starting, ensure you have:
    PROXMOX_USER=root@pam
    PROXMOX_TOKEN_NAME=mcp-server
    PROXMOX_TOKEN_VALUE=your-token-value-here
-   PROXMOX_PORT=8006
    PROXMOX_ALLOW_ELEVATED=false  # Set to 'true' for advanced features
    ```
+
+   **Note**: `PROXMOX_PORT` defaults to 8006 and can be omitted unless using a custom port.
 
 ### Permission Levels
 
@@ -112,12 +113,19 @@ Before starting, ensure you have:
 
 ### Proxmox API Token Setup
 1. Log into your Proxmox web interface
-2. Navigate to Datacenter -> Permissions -> API Tokens
-3. Create a new API token:
-   - Select a user (e.g., root@pam)
-   - Enter a token ID (e.g., "mcp-token")
-   - Uncheck "Privilege Separation" if you want full access
-   - Save and copy both the token ID and secret
+2. Navigate to **Datacenter** → **Permissions** → **API Tokens**
+3. Click **Add** to create a new API token:
+   - **User**: Select existing user (e.g., `root@pam`)
+   - **Token ID**: Enter a name (e.g., `mcp-server`)
+   - **Privilege Separation**: Uncheck for full access or leave checked for limited permissions
+   - Click **Add**
+4. **Important**: Copy both the **Token ID** and **Secret** immediately (secret is only shown once)
+   - Use Token ID as `PROXMOX_TOKEN_NAME`
+   - Use Secret as `PROXMOX_TOKEN_VALUE`
+
+**Permission Requirements:**
+- **Basic Mode**: Minimal permissions (usually default user permissions work)
+- **Elevated Mode**: Add permissions for `Sys.Audit`, `VM.Monitor`, `VM.Console` to the user/token
 
 
 ## 🚀 Running the Server
@@ -127,9 +135,9 @@ Before starting, ensure you have:
 node index.js
 ```
 
-### Claude Code Integration
+### MCP Client Integration
 
-Add this to your Claude Code MCP configuration:
+For Claude Code or other MCP clients, add this to your MCP configuration:
 
 ```json
 {
@@ -143,7 +151,10 @@ Add this to your Claude Code MCP configuration:
 }
 ```
 
-The server will automatically load environment variables from `.env` files in the current directory or parent directories.
+**Important**: 
+- Replace `/absolute/path/to/mcp-proxmox` with the actual path to your installation
+- The server automatically loads environment variables from `.env` files
+- Ensure the `.env` file is in the same directory as `index.js` or a parent directory
 
 # 🔧 Available Tools
 
@@ -294,11 +305,33 @@ Execute a shell command on a virtual machine via Proxmox API (requires elevated 
 
 ## 👨‍💻 Development
 
-Development commands:
+### Development Commands
 
-- Install dependencies: `npm install`
-- Run server: `npm start`
-- Test server: `echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node index.js`
+```bash
+# Install dependencies
+npm install
+
+# Run server (production)
+npm start
+# or
+node index.js
+
+# Run server with auto-reload (development)
+npm run dev
+
+# Test MCP server functionality
+echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node index.js
+
+# Test specific API call
+echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "proxmox_get_nodes", "arguments": {}}}' | node index.js
+```
+
+### Development Notes
+
+- The server loads environment variables from `.env` files automatically
+- Use `npm run dev` for development with auto-reload on file changes
+- All API calls require a proper `.env` configuration
+- Check the server logs for connection and permission issues
 
 ## 📁 Project Structure
 
