@@ -150,139 +150,147 @@ The server will automatically load environment variables from `.env` files in th
 The server provides the following MCP tools for interacting with Proxmox:
 
 ### proxmox_get_nodes
-Lists all nodes in the Proxmox cluster.
+Lists all nodes in the Proxmox cluster with their status and resources.
 
 - Parameters: None
 - Example Response:
   ```
-  🖥️ Proxmox Nodes
+  🖥️  **Proxmox Cluster Nodes**
 
-  🖥️ pve-compute-01
-    • Status: ONLINE
-    • Uptime: ⏳ 156d 12h
-    • CPU Cores: 64
-    • Memory: 186.5 GB / 512.0 GB (36.4%)
-
-  🖥️ pve-compute-02
-    • Status: ONLINE
-    • Uptime: ⏳ 156d 11h
-    • CPU Cores: 64
-    • Memory: 201.3 GB / 512.0 GB (39.3%)
+  🟢 **pve1**
+     • Status: online
+     • Uptime: 3d 2h 53m
+     • CPU: 1.8%
+     • Memory: 5.89 GB / 62.21 GB (9.5%)
+     • Load: N/A
   ```
 
 ### proxmox_get_node_status
-Get detailed status of a specific node.
+Get detailed status of a specific node (requires elevated permissions).
 
 - Parameters:
   - `node` (string, required): Name of the node
-- Example Response:
+- Example Response (Basic Mode):
   ```
-  🖥️ Node: pve-compute-01
-    • Status: ONLINE
-    • Uptime: ⏳ 156d 12h
-    • CPU Usage: 42.3%
-    • CPU Cores: 64 (AMD EPYC 7763)
-    • Memory: 186.5 GB / 512.0 GB (36.4%)
-    • Network: ⬆️ 12.8 GB/s ⬇️ 9.2 GB/s
-    • Temperature: 38°C
+  ⚠️  **Node Status Requires Elevated Permissions**
+
+  To view detailed node status, set `PROXMOX_ALLOW_ELEVATED=true` in your .env file 
+  and ensure your API token has Sys.Audit permissions.
+
+  **Current permissions**: Basic (node listing only)
   ```
 
 ### proxmox_get_vms
-List all VMs across the cluster.
+List all virtual machines across the cluster with their status.
 
-- Parameters: None
+- Parameters:
+  - `node` (string, optional): Filter by specific node
+  - `type` (string, optional): VM type filter ('qemu', 'lxc', 'all'), default: 'all'
 - Example Response:
   ```
-  🗃️ Virtual Machines
+  💻 **Virtual Machines**
 
-  🗃️ prod-db-master (ID: 100)
-    • Status: RUNNING
-    • Node: pve-compute-01
-    • CPU Cores: 16
-    • Memory: 92.3 GB / 128.0 GB (72.1%)
+  🟢 📦 **docker** (ID: 100)
+     • Node: pve1
+     • Status: running
+     • Type: LXC
+     • Uptime: 5h 40m
+     • CPU: 0.8%
+     • Memory: 7.46 GB / 46.88 GB
 
-  🗃️ prod-web-01 (ID: 102)
-    • Status: RUNNING
-    • Node: pve-compute-01
-    • CPU Cores: 8
-    • Memory: 12.8 GB / 32.0 GB (40.0%)
+  🔴 📦 **ubuntu1** (ID: 115)
+     • Node: pve1
+     • Status: stopped
+     • Type: LXC
+  ```
+
+### proxmox_get_vm_status
+Get detailed status information for a specific VM.
+
+- Parameters:
+  - `node` (string, required): Node name where VM is located
+  - `vmid` (string, required): VM ID number
+  - `type` (string, optional): VM type ('qemu', 'lxc'), default: 'qemu'
+- Example Response:
+  ```
+  🟢 📦 **docker** (ID: 100)
+
+  • **Node**: pve1
+  • **Status**: running
+  • **Type**: LXC
+  • **Uptime**: 5h 42m
+  • **CPU Usage**: 0.8%
+  • **Memory**: 7.47 GB / 46.88 GB (15.9%)
+  • **Disk Read**: 19.74 GB
+  • **Disk Write**: 21.71 GB
+  • **Network In**: 1.32 GB
+  • **Network Out**: 216.56 MB
   ```
 
 ### proxmox_get_storage
-List available storage.
+List all storage pools and their usage across the cluster.
 
-- Parameters: None
+- Parameters:
+  - `node` (string, optional): Filter by specific node
 - Example Response:
   ```
-  💾 Storage Pools
+  💾 **Storage Pools**
 
-  💾 ceph-prod
-    • Status: ONLINE
-    • Type: rbd
-    • Usage: 12.8 TB / 20.0 TB (64.0%)
-    • IOPS: ⬆️ 15.2k ⬇️ 12.8k
+  🟢 **local**
+     • Node: pve1
+     • Type: dir
+     • Content: vztmpl,iso,backup
+     • Usage: 19.58 GB / 93.93 GB (20.8%)
+     • Status: Enabled
 
-  💾 local-zfs
-    • Status: ONLINE
-    • Type: zfspool
-    • Usage: 3.2 TB / 8.0 TB (40.0%)
-    • IOPS: ⬆️ 42.8k ⬇️ 35.6k
+  🟢 **zfs**
+     • Node: pve1
+     • Type: zfspool
+     • Content: rootdir,images
+     • Usage: 87.33 MB / 899.25 GB (0.0%)
+     • Status: Enabled
   ```
 
 ### proxmox_get_cluster_status
-Get overall cluster status.
+Get overall cluster status including nodes and resource usage.
 
 - Parameters: None
-- Example Response:
+- Example Response (Basic Mode):
   ```
-  ⚙️ Proxmox Cluster
+  🏗️  **Proxmox Cluster Status**
 
-    • Name: enterprise-cloud
-    • Status: HEALTHY
-    • Quorum: OK
-    • Nodes: 4 ONLINE
-    • Version: 8.1.3
-    • HA Status: ACTIVE
-    • Resources:
-      - Total CPU Cores: 192
-      - Total Memory: 1536 GB
-      - Total Storage: 70 TB
-    • Workload:
-      - Running VMs: 7
-      - Total VMs: 8
-      - Average CPU Usage: 38.6%
-      - Average Memory Usage: 42.8%
+  **Cluster Health**: 🟢 Healthy
+  **Nodes**: 1/1 online
+
+  ⚠️  **Limited Information**: Resource usage requires elevated permissions
+
+  **Node Details**:
+  🟢 pve1 - online
   ```
 
 ### proxmox_execute_vm_command
-Execute a command in a VM's console using QEMU Guest Agent.
+Execute a shell command on a virtual machine via Proxmox API (requires elevated permissions).
 
 - Parameters:
-  - `node` (string, required): Name of the node where VM is running
-  - `vmid` (string, required): ID of the VM
-  - `command` (string, required): Command to execute
-- Example Response:
+  - `node` (string, required): Node name where VM is located
+  - `vmid` (string, required): VM ID number
+  - `command` (string, required): Shell command to execute
+  - `type` (string, optional): VM type ('qemu', 'lxc'), default: 'qemu'
+- Example Response (Basic Mode):
   ```
-  🔧 Console Command Result
-    • Status: SUCCESS
-    • Command: systemctl status nginx
-    • Node: pve-compute-01
-    • VM: prod-web-01 (ID: 102)
+  ⚠️  **VM Command Execution Requires Elevated Permissions**
 
-  Output:
-  ● nginx.service - A high performance web server and a reverse proxy server
-     Loaded: loaded (/lib/systemd/system/nginx.service; enabled; vendor preset: enabled)
-     Active: active (running) since Tue 2025-02-18 15:23:45 UTC; 2 months 3 days ago
+  To execute commands on VMs, set `PROXMOX_ALLOW_ELEVATED=true` in your .env file 
+  and ensure your API token has appropriate VM permissions.
+
+  **Current permissions**: Basic (VM listing only)
+  **Requested command**: `uptime`
   ```
-- Requirements:
+- Requirements (Elevated Mode):
   - VM must be running
-  - QEMU Guest Agent must be installed and running in the VM
-  - Command execution permissions must be enabled in the Guest Agent
-- Error Handling:
-  - Returns error if VM is not running
-  - Returns error if VM is not found
-  - Returns error if command execution fails
-  - Includes command output even if command returns non-zero exit code
+  - For QEMU: QEMU Guest Agent must be installed and running
+  - For LXC: Direct execution via Proxmox API
+  - Appropriate API token permissions
 
 ## 👨‍💻 Development
 
