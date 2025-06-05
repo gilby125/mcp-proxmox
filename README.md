@@ -26,7 +26,6 @@ This project is based on the original Python implementation by [canvrno/ProxmoxM
 - [Node.js](https://nodejs.org/) - JavaScript runtime
 - [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk) - Model Context Protocol SDK for Node.js
 - [node-fetch](https://github.com/node-fetch/node-fetch) - HTTP client for API requests
-- [Claude Code](https://claude.ai/code) - AI coding assistant integration
 
 ## ✨ Features
 
