@@ -1,26 +1,44 @@
-# 🚀 Proxmox Manager - Proxmox MCP Server
+# 🚀 Proxmox MCP Server (Node.js Edition)
 
-![ProxmoxMCP](https://github.com/user-attachments/assets/e32ab79f-be8a-420c-ab2d-475612150534)
+A Node.js-based Model Context Protocol (MCP) server for interacting with Proxmox hypervisors, providing a clean interface for managing nodes, VMs, and containers with configurable permission levels.
 
-A Python-based Model Context Protocol (MCP) server for interacting with Proxmox hypervisors, providing a clean interface for managing nodes, VMs, and containers.
+## 🙏 Credits
+
+This project is based on the original Python implementation by [canvrno/ProxmoxMCP](https://github.com/canvrno/ProxmoxMCP). This Node.js version maintains the same core functionality while adapting it for JavaScript/Node.js environments and adding configurable permission management.
+
+## 🔄 Changes from Original
+
+**Architecture Changes:**
+- ✅ Complete rewrite from Python to Node.js
+- ✅ Uses `@modelcontextprotocol/sdk` instead of Python MCP SDK
+- ✅ Environment variable configuration instead of JSON config files
+- ✅ Simplified dependency management with npm
+
+**New Features:**
+- 🔒 **Configurable Permission Levels**: `PROXMOX_ALLOW_ELEVATED` setting for security
+- 🛡️ **Basic Mode**: Safe operations (node listing, VM status) with minimal permissions
+- 🔓 **Elevated Mode**: Advanced features (detailed metrics, command execution) requiring full permissions
+- 📝 **Better Error Handling**: Clear permission warnings and graceful degradation
+- 🔧 **Auto Environment Loading**: Automatically loads `.env` files from parent directories
 
 ## 🏗️ Built With
 
-- [Cline](https://github.com/cline/cline) - Autonomous coding agent - Go faster with Cline.
-- [Proxmoxer](https://github.com/proxmoxer/proxmoxer) - Python wrapper for Proxmox API
-- [MCP SDK](https://github.com/modelcontextprotocol/sdk) - Model Context Protocol SDK
-- [Pydantic](https://docs.pydantic.dev/) - Data validation using Python type annotations
+- [Node.js](https://nodejs.org/) - JavaScript runtime
+- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk) - Model Context Protocol SDK for Node.js
+- [node-fetch](https://github.com/node-fetch/node-fetch) - HTTP client for API requests
+- [Claude Code](https://claude.ai/code) - AI coding assistant integration
 
 ## ✨ Features
 
-- 🤖 Full integration with Cline
-- 🛠️ Built with the official MCP SDK
-- 🔒 Secure token-based authentication with Proxmox
-- 🖥️ Tools for managing nodes and VMs
-- 💻 VM console command execution
-- 📝 Configurable logging system
-- ✅ Type-safe implementation with Pydantic
-- 🎨 Rich output formatting with customizable themes
+- 🔒 **Configurable Security**: Two permission levels for safe operation
+- 🛠️ Built with the official MCP SDK for Node.js
+- 🔐 Secure token-based authentication with Proxmox
+- 🖥️ Comprehensive node and VM management
+- 💻 VM console command execution (elevated mode)
+- 📊 Real-time resource monitoring
+- 🎨 Rich markdown-formatted output
+- ⚡ Fast Node.js performance
+- 🔧 Easy environment-based configuration
 
 
 
@@ -31,94 +49,65 @@ https://github.com/user-attachments/assets/1b5f42f7-85d5-4918-aca4-d38413b0e82b
 ## 📦 Installation
 
 ### Prerequisites
-- UV package manager (recommended)
-- Python 3.10 or higher
+- Node.js 16+ and npm
 - Git
 - Access to a Proxmox server with API token credentials
 
 Before starting, ensure you have:
+- [ ] Node.js and npm installed
 - [ ] Proxmox server hostname or IP
 - [ ] Proxmox API token (see [API Token Setup](#proxmox-api-token-setup))
-- [ ] UV installed (`pip install uv`)
 
-### Option 1: Quick Install (Recommended)
+### Quick Install
 
-1. Clone and set up environment:
+1. Clone and set up:
    ```bash
-   # Clone repository
-   cd ~/Documents/Cline/MCP  # For Cline users
-   # OR
-   cd your/preferred/directory  # For manual installation
-   
-   git clone https://github.com/canvrno/ProxmoxMCP.git
-   cd ProxmoxMCP
-
-   # Create and activate virtual environment
-   uv venv
-   source .venv/bin/activate  # Linux/macOS
-   # OR
-   .\.venv\Scripts\Activate.ps1  # Windows
+   git clone https://github.com/gilby125/mcp-proxmox.git
+   cd mcp-proxmox
+   npm install
    ```
 
-2. Install dependencies:
+2. Create `.env` file with your Proxmox configuration:
    ```bash
-   # Install with development dependencies
-   uv pip install -e ".[dev]"
+   # Proxmox Configuration
+   PROXMOX_HOST=192.168.1.100
+   PROXMOX_USER=root@pam
+   PROXMOX_TOKEN_NAME=mcp-server
+   PROXMOX_TOKEN_VALUE=your-token-value-here
+   PROXMOX_PORT=8006
+   PROXMOX_ALLOW_ELEVATED=false  # Set to 'true' for advanced features
    ```
 
-3. Create configuration:
-   ```bash
-   # Create config directory and copy template
-   mkdir -p proxmox-config
-   cp config/config.example.json proxmox-config/config.json
-   ```
+### Permission Levels
 
-4. Edit `proxmox-config/config.json`:
-   ```json
-   {
-       "proxmox": {
-           "host": "PROXMOX_HOST",        # Required: Your Proxmox server address
-           "port": 8006,                  # Optional: Default is 8006
-           "verify_ssl": false,           # Optional: Set false for self-signed certs
-           "service": "PVE"               # Optional: Default is PVE
-       },
-       "auth": {
-           "user": "USER@pve",            # Required: Your Proxmox username
-           "token_name": "TOKEN_NAME",    # Required: API token ID
-           "token_value": "TOKEN_VALUE"   # Required: API token value
-       },
-       "logging": {
-           "level": "INFO",               # Optional: DEBUG for more detail
-           "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-           "file": "proxmox_mcp.log"      # Optional: Log to file
-       }
-   }
-   ```
+**Basic Mode** (`PROXMOX_ALLOW_ELEVATED=false`):
+- List cluster nodes and their status
+- List VMs and containers
+- Basic cluster health overview
+- Requires minimal API token permissions
+
+**Elevated Mode** (`PROXMOX_ALLOW_ELEVATED=true`):
+- All basic features plus:
+- Detailed node resource metrics
+- VM command execution
+- Advanced cluster statistics
+- Requires API token with `Sys.Audit`, `VM.Monitor`, `VM.Console` permissions
 
 ### Verifying Installation
 
-1. Check Python environment:
+1. Test the MCP server:
    ```bash
-   python -c "import proxmox_mcp; print('Installation OK')"
+   echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node index.js
    ```
 
-2. Run the tests:
+2. Test a basic API call:
    ```bash
-   pytest
-   ```
-
-3. Verify configuration:
-   ```bash
-   # Linux/macOS
-   PROXMOX_MCP_CONFIG="proxmox-config/config.json" python -m proxmox_mcp.server
-
-   # Windows (PowerShell)
-   $env:PROXMOX_MCP_CONFIG="proxmox-config\config.json"; python -m proxmox_mcp.server
+   echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "proxmox_get_nodes", "arguments": {}}}' | node index.js
    ```
 
    You should see either:
-   - A successful connection to your Proxmox server
-   - Or a connection error (if Proxmox details are incorrect)
+   - A successful list of your Proxmox nodes
+   - Or a connection/permission error with helpful guidance
 
 ## ⚙️ Configuration
 
@@ -134,78 +123,34 @@ Before starting, ensure you have:
 
 ## 🚀 Running the Server
 
-### Development Mode
-For testing and development:
+### Direct Execution
 ```bash
-# Activate virtual environment first
-source .venv/bin/activate  # Linux/macOS
-# OR
-.\.venv\Scripts\Activate.ps1  # Windows
-
-# Run the server
-python -m proxmox_mcp.server
+node index.js
 ```
 
-### Cline Desktop Integration
+### Claude Code Integration
 
-For Cline users, add this configuration to your MCP settings file (typically at `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
+Add this to your Claude Code MCP configuration:
 
 ```json
 {
-    "mcpServers": {
-        "github.com/canvrno/ProxmoxMCP": {
-            "command": "/absolute/path/to/ProxmoxMCP/.venv/bin/python",
-            "args": ["-m", "proxmox_mcp.server"],
-            "cwd": "/absolute/path/to/ProxmoxMCP",
-            "env": {
-                "PYTHONPATH": "/absolute/path/to/ProxmoxMCP/src",
-                "PROXMOX_MCP_CONFIG": "/absolute/path/to/ProxmoxMCP/proxmox-config/config.json",
-                "PROXMOX_HOST": "your-proxmox-host",
-                "PROXMOX_USER": "username@pve",
-                "PROXMOX_TOKEN_NAME": "token-name",
-                "PROXMOX_TOKEN_VALUE": "token-value",
-                "PROXMOX_PORT": "8006",
-                "PROXMOX_VERIFY_SSL": "false",
-                "PROXMOX_SERVICE": "PVE",
-                "LOG_LEVEL": "DEBUG"
-            },
-            "disabled": false,
-            "autoApprove": []
-        }
+  "mcpServers": {
+    "mcp-proxmox": {
+      "command": "node",
+      "args": ["index.js"],
+      "cwd": "/absolute/path/to/mcp-proxmox"
     }
+  }
 }
 ```
 
-To help generate the correct paths, you can use this command:
-```bash
-# This will print the MCP settings with your absolute paths filled in
-python -c "import os; print(f'''{{
-    \"mcpServers\": {{
-        \"github.com/canvrno/ProxmoxMCP\": {{
-            \"command\": \"{os.path.abspath('.venv/bin/python')}\",
-            \"args\": [\"-m\", \"proxmox_mcp.server\"],
-            \"cwd\": \"{os.getcwd()}\",
-            \"env\": {{
-                \"PYTHONPATH\": \"{os.path.abspath('src')}\",
-                \"PROXMOX_MCP_CONFIG\": \"{os.path.abspath('proxmox-config/config.json')}\",
-                ...
-            }}
-        }}
-    }}
-}}''')"
-```
-
-Important:
-- All paths must be absolute
-- The Python interpreter must be from your virtual environment
-- The PYTHONPATH must point to the src directory
-- Restart VSCode after updating MCP settings
+The server will automatically load environment variables from `.env` files in the current directory or parent directories.
 
 # 🔧 Available Tools
 
 The server provides the following MCP tools for interacting with Proxmox:
 
-### get_nodes
+### proxmox_get_nodes
 Lists all nodes in the Proxmox cluster.
 
 - Parameters: None
@@ -226,7 +171,7 @@ Lists all nodes in the Proxmox cluster.
     • Memory: 201.3 GB / 512.0 GB (39.3%)
   ```
 
-### get_node_status
+### proxmox_get_node_status
 Get detailed status of a specific node.
 
 - Parameters:
@@ -243,7 +188,7 @@ Get detailed status of a specific node.
     • Temperature: 38°C
   ```
 
-### get_vms
+### proxmox_get_vms
 List all VMs across the cluster.
 
 - Parameters: None
@@ -264,7 +209,7 @@ List all VMs across the cluster.
     • Memory: 12.8 GB / 32.0 GB (40.0%)
   ```
 
-### get_storage
+### proxmox_get_storage
 List available storage.
 
 - Parameters: None
@@ -285,7 +230,7 @@ List available storage.
     • IOPS: ⬆️ 42.8k ⬇️ 35.6k
   ```
 
-### get_cluster_status
+### proxmox_get_cluster_status
 Get overall cluster status.
 
 - Parameters: None
@@ -310,7 +255,7 @@ Get overall cluster status.
       - Average Memory Usage: 42.8%
   ```
 
-### execute_vm_command
+### proxmox_execute_vm_command
 Execute a command in a VM's console using QEMU Guest Agent.
 
 - Parameters:
@@ -342,31 +287,22 @@ Execute a command in a VM's console using QEMU Guest Agent.
 
 ## 👨‍💻 Development
 
-After activating your virtual environment:
+Development commands:
 
-- Run tests: `pytest`
-- Format code: `black .`
-- Type checking: `mypy .`
-- Lint: `ruff .`
+- Install dependencies: `npm install`
+- Run server: `npm start`
+- Test server: `echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node index.js`
 
 ## 📁 Project Structure
 
 ```
-proxmox-mcp/
-├── src/
-│   └── proxmox_mcp/
-│       ├── server.py          # Main MCP server implementation
-│       ├── config/            # Configuration handling
-│       ├── core/              # Core functionality
-│       ├── formatting/        # Output formatting and themes
-│       ├── tools/             # Tool implementations
-│       │   └── console/       # VM console operations
-│       └── utils/             # Utilities (auth, logging)
-├── tests/                     # Test suite
-├── proxmox-config/
-│   └── config.example.json    # Configuration template
-├── pyproject.toml            # Project metadata and dependencies
-└── LICENSE                   # MIT License
+mcp-proxmox/
+├── index.js                  # Main MCP server implementation
+├── package.json             # Node.js dependencies and scripts
+├── package-lock.json        # Dependency lock file
+├── .env                     # Environment configuration (not in git)
+├── node_modules/            # Dependencies (not in git)
+└── README.md               # This documentation
 ```
 
 ## 📄 License
