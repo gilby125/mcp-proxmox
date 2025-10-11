@@ -5,15 +5,31 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.4.0",
-    "node-fetch": "^3.3.2",
-    "https": "^1.0.0"
+    "https": "^1.0.0",
+    "node-fetch": "^2.7.0"
   },
-  "keywords": ["mcp", "proxmox", "virtualization", "vm", "devops"],
+  "keywords": [
+    "mcp",
+    "proxmox",
+    "virtualization",
+    "vm",
+    "devops"
+  ],
   "author": "Dev Server Setup",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.7.2",
+    "@types/node-fetch": "^2.6.13",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
+    "typescript": "^5.9.3"
+  }
 }
