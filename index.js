@@ -48,10 +48,16 @@ class ProxmoxServer {
       }
     );
     
-    this.proxmoxHost = process.env.PROXMOX_HOST || '192.168.6.247';
+    this.proxmoxHost = process.env.PROXMOX_HOST;
+    if (!this.proxmoxHost) {
+      throw new Error('PROXMOX_HOST environment variable is required');
+    }
     this.proxmoxUser = process.env.PROXMOX_USER || 'root@pam';
     this.proxmoxTokenName = process.env.PROXMOX_TOKEN_NAME || 'mcpserver';
     this.proxmoxTokenValue = process.env.PROXMOX_TOKEN_VALUE;
+    if (!this.proxmoxTokenValue) {
+      throw new Error('PROXMOX_TOKEN_VALUE environment variable is required');
+    }
     this.proxmoxPort = process.env.PROXMOX_PORT || '8006';
     this.allowElevated = process.env.PROXMOX_ALLOW_ELEVATED === 'true';
     
@@ -87,6 +93,91 @@ class ProxmoxServer {
       throw new Error('Invalid VM ID. Must be a number between 100 and 999999999');
     }
     return id.toString();
+  }
+
+  validateStorageName(storage) {
+    if (!storage || typeof storage !== 'string') {
+      throw new Error('Storage name is required and must be a string');
+    }
+    // Proxmox storage IDs: alphanumeric, hyphens, underscores, dots
+    if (!/^[a-zA-Z0-9\-_.]+$/.test(storage)) {
+      throw new Error('Invalid storage name format. Only alphanumeric, hyphens, underscores, and dots allowed');
+    }
+    if (storage.length > 64) {
+      throw new Error('Storage name too long (max 64 characters)');
+    }
+    return storage;
+  }
+
+  validateSnapshotName(snapname) {
+    if (!snapname || typeof snapname !== 'string') {
+      throw new Error('Snapshot name is required and must be a string');
+    }
+    // Proxmox snapshot names: alphanumeric, hyphens, underscores
+    if (!/^[a-zA-Z0-9\-_]+$/.test(snapname)) {
+      throw new Error('Invalid snapshot name format. Only alphanumeric, hyphens, and underscores allowed');
+    }
+    if (snapname.length > 40) {
+      throw new Error('Snapshot name too long (max 40 characters)');
+    }
+    return snapname;
+  }
+
+  validateDiskName(disk) {
+    if (!disk || typeof disk !== 'string') {
+      throw new Error('Disk name is required and must be a string');
+    }
+    // Valid Proxmox disk names: scsi0-15, virtio0-15, sata0-5, ide0-3, efidisk0, tpmstate0, rootfs, mp0-255
+    if (!/^(scsi|virtio|sata|ide|efidisk|tpmstate|rootfs|mp)\d*$/.test(disk)) {
+      throw new Error('Invalid disk name format. Expected: scsi0-15, virtio0-15, sata0-5, ide0-3, efidisk0, tpmstate0, rootfs, or mp0-255');
+    }
+    return disk;
+  }
+
+  validateNetworkName(net) {
+    if (!net || typeof net !== 'string') {
+      throw new Error('Network interface name is required and must be a string');
+    }
+    // Valid Proxmox network names: net0-31
+    if (!/^net\d{1,2}$/.test(net)) {
+      throw new Error('Invalid network interface name. Expected: net0-31');
+    }
+    const num = parseInt(net.replace('net', ''), 10);
+    if (num > 31) {
+      throw new Error('Network interface number out of range (max: net31)');
+    }
+    return net;
+  }
+
+  validateBridgeName(bridge) {
+    if (!bridge || typeof bridge !== 'string') {
+      throw new Error('Bridge name is required and must be a string');
+    }
+    // Proxmox bridges: vmbr0-999 or custom names (alphanumeric, hyphens, underscores)
+    if (!/^[a-zA-Z0-9\-_]+$/.test(bridge)) {
+      throw new Error('Invalid bridge name format. Only alphanumeric, hyphens, and underscores allowed');
+    }
+    if (bridge.length > 32) {
+      throw new Error('Bridge name too long (max 32 characters)');
+    }
+    return bridge;
+  }
+
+  validateMountPoint(mp) {
+    if (!mp || typeof mp !== 'string') {
+      throw new Error('Mount point name is required and must be a string');
+    }
+    // Valid Proxmox mount points: mp0-255, rootfs
+    if (!/^(mp\d{1,3}|rootfs)$/.test(mp)) {
+      throw new Error('Invalid mount point name. Expected: mp0-255 or rootfs');
+    }
+    if (mp.startsWith('mp')) {
+      const num = parseInt(mp.replace('mp', ''), 10);
+      if (num > 255) {
+        throw new Error('Mount point number out of range (max: mp255)');
+      }
+    }
+    return mp;
   }
 
   validateCommand(command) {
@@ -1149,16 +1240,17 @@ class ProxmoxServer {
 
   async getVMs(nodeFilter = null, typeFilter = 'all') {
     let vms = [];
-    
+
     if (nodeFilter) {
-      const nodeVMs = await this.proxmoxRequest(`/nodes/${nodeFilter}/qemu`);
-      const nodeLXCs = await this.proxmoxRequest(`/nodes/${nodeFilter}/lxc`);
+      const safeNodeFilter = this.validateNodeName(nodeFilter);
+      const nodeVMs = await this.proxmoxRequest(`/nodes/${safeNodeFilter}/qemu`);
+      const nodeLXCs = await this.proxmoxRequest(`/nodes/${safeNodeFilter}/lxc`);
       
       if (typeFilter === 'all' || typeFilter === 'qemu') {
-        vms.push(...nodeVMs.map(vm => ({ ...vm, type: 'qemu', node: nodeFilter })));
+        vms.push(...nodeVMs.map(vm => ({ ...vm, type: 'qemu', node: safeNodeFilter })));
       }
       if (typeFilter === 'all' || typeFilter === 'lxc') {
-        vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: nodeFilter })));
+        vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: safeNodeFilter })));
       }
     } else {
       const nodes = await this.proxmoxRequest('/nodes');
@@ -1302,10 +1394,11 @@ class ProxmoxServer {
 
   async getStorage(nodeFilter = null) {
     let storages = [];
-    
+
     if (nodeFilter) {
-      storages = await this.proxmoxRequest(`/nodes/${nodeFilter}/storage`);
-      storages = storages.map(storage => ({ ...storage, node: nodeFilter }));
+      const safeNodeFilter = this.validateNodeName(nodeFilter);
+      storages = await this.proxmoxRequest(`/nodes/${safeNodeFilter}/storage`);
+      storages = storages.map(storage => ({ ...storage, node: safeNodeFilter }));
     } else {
       const nodes = await this.proxmoxRequest('/nodes');
       
@@ -1423,8 +1516,9 @@ class ProxmoxServer {
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
+      const safeStorage = this.validateStorageName(storage);
 
-      const templates = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${storage}/content?content=vztmpl`);
+      const templates = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content?content=vztmpl`);
 
       let output = '📦 **Available LXC Templates**\n\n';
 
@@ -1991,14 +2085,15 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeSnapname = this.validateSnapshotName(snapname);
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot`, 'POST', {
-        snapname: snapname
+        snapname: safeSnapname
       });
 
       let output = `📸 **Snapshot Creation Started**\n\n`;
       output += `• **VM ID**: ${safeVMID}\n`;
-      output += `• **Snapshot Name**: ${snapname}\n`;
+      output += `• **Snapshot Name**: ${safeSnapname}\n`;
       output += `• **Type**: ${type.toUpperCase()}\n`;
       output += `• **Node**: ${safeNode}\n`;
       output += `• **Task ID**: ${result || 'N/A'}\n\n`;
@@ -2089,12 +2184,13 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeSnapname = this.validateSnapshotName(snapname);
 
-      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot/${snapname}/rollback`, 'POST', {});
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot/${safeSnapname}/rollback`, 'POST', {});
 
       let output = `⏮️  **Snapshot Rollback Started**\n\n`;
       output += `• **VM ID**: ${safeVMID}\n`;
-      output += `• **Snapshot Name**: ${snapname}\n`;
+      output += `• **Snapshot Name**: ${safeSnapname}\n`;
       output += `• **Type**: ${type.toUpperCase()}\n`;
       output += `• **Node**: ${safeNode}\n`;
       output += `• **Task ID**: ${result || 'N/A'}\n\n`;
@@ -2128,12 +2224,13 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeSnapname = this.validateSnapshotName(snapname);
 
-      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot/${snapname}`, 'DELETE');
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot/${safeSnapname}`, 'DELETE');
 
       let output = `🗑️  **Snapshot Deletion Started**\n\n`;
       output += `• **VM ID**: ${safeVMID}\n`;
-      output += `• **Snapshot Name**: ${snapname}\n`;
+      output += `• **Snapshot Name**: ${safeSnapname}\n`;
       output += `• **Type**: ${type.toUpperCase()}\n`;
       output += `• **Node**: ${safeNode}\n`;
       output += `• **Task ID**: ${result || 'N/A'}\n\n`;
@@ -2214,10 +2311,11 @@ class ProxmoxServer {
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
+      const safeStorage = this.validateStorageName(storage);
 
-      const backups = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${storage}/content?content=backup`);
+      const backups = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content?content=backup`);
 
-      let output = `📦 **Backups on ${storage}**\n\n`;
+      let output = `📦 **Backups on ${safeStorage}**\n\n`;
 
       if (!backups || backups.length === 0) {
         output += `No backups found on storage \`${storage}\`.\n\n`;
@@ -2324,9 +2422,10 @@ class ProxmoxServer {
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
+      const safeStorage = this.validateStorageName(storage);
 
       const encodedVolume = encodeURIComponent(volume);
-      const result = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${storage}/content/${encodedVolume}`, 'DELETE');
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content/${encodedVolume}`, 'DELETE');
 
       let output = `🗑️  **Backup Deletion Started**\n\n`;
       output += `• **Node**: ${safeNode}\n`;
@@ -2362,9 +2461,11 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
+      const safeStorage = this.validateStorageName(storage);
 
       const body = {
-        [disk]: `${storage}:${size}`
+        [safeDisk]: `${safeStorage}:${size}`
       };
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
@@ -2410,9 +2511,11 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeMp = this.validateMountPoint(mp);
+      const safeStorage = this.validateStorageName(storage);
 
       const body = {
-        [mp]: `${storage}:${size}`
+        [safeMp]: `${safeStorage}:${size}`
       };
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'PUT', body);
@@ -2454,9 +2557,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
 
       const body = {
-        disk: disk,
+        disk: safeDisk,
         size: size
       };
 
@@ -2500,9 +2604,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
 
       const body = {
-        disk: disk,
+        disk: safeDisk,
         size: size
       };
 
@@ -2547,9 +2652,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
 
       const body = {
-        delete: disk
+        delete: safeDisk
       };
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
@@ -2589,9 +2695,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeMp = this.validateMountPoint(mp);
 
       const body = {
-        delete: mp
+        delete: safeMp
       };
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'PUT', body);
@@ -2631,10 +2738,12 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
+      const safeStorage = this.validateStorageName(storage);
 
       const body = {
-        disk: disk,
-        storage: storage,
+        disk: safeDisk,
+        storage: safeStorage,
         delete: deleteSource ? 1 : 0
       };
 
@@ -2677,10 +2786,12 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeDisk = this.validateDiskName(disk);
+      const safeStorage = this.validateStorageName(storage);
 
       const body = {
-        volume: disk,
-        storage: storage,
+        volume: safeDisk,
+        storage: safeStorage,
         delete: deleteSource ? 1 : 0
       };
 
@@ -2724,9 +2835,11 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
+      const safeBridge = this.validateBridgeName(bridge);
 
       // Build network configuration string
-      let netConfig = `${model || 'virtio'},bridge=${bridge}`;
+      let netConfig = `${model || 'virtio'},bridge=${safeBridge}`;
 
       if (macaddr) {
         netConfig += `,macaddr=${macaddr}`;
@@ -2741,7 +2854,7 @@ class ProxmoxServer {
       }
 
       const body = {
-        [net]: netConfig
+        [safeNet]: netConfig
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
@@ -2787,12 +2900,14 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
+      const safeBridge = this.validateBridgeName(bridge);
 
       // Extract interface number (e.g., net0 -> 0, net1 -> 1)
-      const netNum = net.replace('net', '');
+      const netNum = safeNet.replace('net', '');
 
       // Build network configuration string
-      let netConfig = `name=eth${netNum},bridge=${bridge}`;
+      let netConfig = `name=eth${netNum},bridge=${safeBridge}`;
 
       if (ip) {
         netConfig += `,ip=${ip}`;
@@ -2807,7 +2922,7 @@ class ProxmoxServer {
       }
 
       const body = {
-        [net]: netConfig
+        [safeNet]: netConfig
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'PUT', body);
@@ -2815,7 +2930,7 @@ class ProxmoxServer {
       let output = `🌐 **LXC Network Interface Added**\n\n`;
       output += `• **Container ID**: ${safeVMID}\n`;
       output += `• **Node**: ${safeNode}\n`;
-      output += `• **Interface**: ${net} (eth${netNum})\n`;
+      output += `• **Interface**: ${safeNet} (eth${netNum})\n`;
       output += `• **Bridge**: ${bridge}\n`;
       if (ip) output += `• **IP Address**: ${ip}\n`;
       if (gw) output += `• **Gateway**: ${gw}\n`;
@@ -2852,21 +2967,23 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
+      if (bridge) this.validateBridgeName(bridge);
 
       // Get current VM configuration
       const config = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'GET');
 
-      if (!config[net]) {
+      if (!config[safeNet]) {
         return {
           content: [{
             type: 'text',
-            text: `❌ **Network interface ${net} does not exist**\n\nPlease add the interface first using proxmox_add_network_vm.\n\n**Existing interfaces**: ${Object.keys(config).filter(k => k.startsWith('net')).join(', ') || 'None'}`
+            text: `❌ **Network interface ${safeNet} does not exist**\n\nPlease add the interface first using proxmox_add_network_vm.\n\n**Existing interfaces**: ${Object.keys(config).filter(k => k.startsWith('net')).join(', ') || 'None'}`
           }]
         };
       }
 
       // Parse current configuration
-      const currentConfig = config[net];
+      const currentConfig = config[safeNet];
       const configParts = {};
       currentConfig.split(',').forEach(part => {
         const [key, value] = part.split('=');
@@ -2912,7 +3029,7 @@ class ProxmoxServer {
         .join(',');
 
       const body = {
-        [net]: netConfig
+        [safeNet]: netConfig
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
@@ -2920,7 +3037,7 @@ class ProxmoxServer {
       let output = `🔧 **VM Network Interface Updated**\n\n`;
       output += `• **VM ID**: ${safeVMID}\n`;
       output += `• **Node**: ${safeNode}\n`;
-      output += `• **Interface**: ${net}\n`;
+      output += `• **Interface**: ${safeNet}\n`;
       output += `• **New Configuration**: ${netConfig}\n\n`;
       output += `**Changes applied**:\n`;
       if (bridge !== undefined) output += `- Bridge: ${bridge}\n`;
@@ -2956,21 +3073,23 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
+      if (bridge) this.validateBridgeName(bridge);
 
       // Get current container configuration
       const config = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'GET');
 
-      if (!config[net]) {
+      if (!config[safeNet]) {
         return {
           content: [{
             type: 'text',
-            text: `❌ **Network interface ${net} does not exist**\n\nPlease add the interface first using proxmox_add_network_lxc.\n\n**Existing interfaces**: ${Object.keys(config).filter(k => k.startsWith('net')).join(', ') || 'None'}`
+            text: `❌ **Network interface ${safeNet} does not exist**\n\nPlease add the interface first using proxmox_add_network_lxc.\n\n**Existing interfaces**: ${Object.keys(config).filter(k => k.startsWith('net')).join(', ') || 'None'}`
           }]
         };
       }
 
       // Parse current configuration
-      const currentConfig = config[net];
+      const currentConfig = config[safeNet];
       const configParts = {};
       currentConfig.split(',').forEach(part => {
         const [key, value] = part.split('=');
@@ -3004,7 +3123,7 @@ class ProxmoxServer {
         .join(',');
 
       const body = {
-        [net]: netConfig
+        [safeNet]: netConfig
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'PUT', body);
@@ -3012,7 +3131,7 @@ class ProxmoxServer {
       let output = `🔧 **LXC Network Interface Updated**\n\n`;
       output += `• **Container ID**: ${safeVMID}\n`;
       output += `• **Node**: ${safeNode}\n`;
-      output += `• **Interface**: ${net}\n`;
+      output += `• **Interface**: ${safeNet}\n`;
       output += `• **New Configuration**: ${netConfig}\n\n`;
       output += `**Changes applied**:\n`;
       if (bridge !== undefined) output += `- Bridge: ${bridge}\n`;
@@ -3047,9 +3166,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
 
       const body = {
-        delete: net
+        delete: safeNet
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
@@ -3057,7 +3177,7 @@ class ProxmoxServer {
       let output = `➖ **VM Network Interface Removed**\n\n`;
       output += `• **VM ID**: ${safeVMID}\n`;
       output += `• **Node**: ${safeNode}\n`;
-      output += `• **Interface Removed**: ${net}\n\n`;
+      output += `• **Interface Removed**: ${safeNet}\n\n`;
       output += `**Note**: The network interface has been removed from the VM configuration.\n`;
       output += `**Tip**: If the VM is running, you may need to restart it for changes to take effect.\n`;
 
@@ -3088,9 +3208,10 @@ class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeNet = this.validateNetworkName(net);
 
       const body = {
-        delete: net
+        delete: safeNet
       };
 
       await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`, 'PUT', body);
@@ -3098,7 +3219,7 @@ class ProxmoxServer {
       let output = `➖ **LXC Network Interface Removed**\n\n`;
       output += `• **Container ID**: ${safeVMID}\n`;
       output += `• **Node**: ${safeNode}\n`;
-      output += `• **Interface Removed**: ${net}\n\n`;
+      output += `• **Interface Removed**: ${safeNet}\n\n`;
       output += `**Note**: The network interface has been removed from the container configuration.\n`;
       output += `**Tip**: If the container is running, you may need to restart it for changes to take effect.\n`;
 
