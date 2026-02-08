@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import { ProxmoxServer } from '../index.js';
 
 test('getVMs assigns LXC node from the iterated node (not VM payload)', async () => {
+  process.env.PROXMOX_HOST ??= 'example.invalid';
+  process.env.PROXMOX_TOKEN_VALUE ??= 'test-token';
+
   const server = new ProxmoxServer();
 
   server.proxmoxRequest = async (endpoint) => {
@@ -24,4 +27,3 @@ test('getVMs assigns LXC node from the iterated node (not VM payload)', async ()
   assert.match(text, /Node:\s+pve1/);
   assert.doesNotMatch(text, /wrong-node/);
 });
-
