@@ -34,7 +34,7 @@ try {
   console.error('Warning: Could not load .env file:', error.message);
 }
 
-class ProxmoxServer {
+export class ProxmoxServer {
   constructor() {
     this.server = new Server(
       {
@@ -1171,7 +1171,7 @@ class ProxmoxServer {
         
         if (typeFilter === 'all' || typeFilter === 'lxc') {
           const nodeLXCs = await this.proxmoxRequest(`/nodes/${node.node}/lxc`);
-          vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: vm.node || node.node })));
+          vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: node.node })));
         }
       }
     }
@@ -3144,5 +3144,7 @@ class ProxmoxServer {
   }
 }
 
-const server = new ProxmoxServer();
-server.run().catch(console.error);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const server = new ProxmoxServer();
+  server.run().catch(console.error);
+}
