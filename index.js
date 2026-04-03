@@ -132,9 +132,9 @@ export class ProxmoxServer {
       return disk;
     }
 
-    const match = disk.match(/^(scsi|virtio|sata|ide|mp)(\d+)$/);
+    const match = disk.match(/^(scsi|virtio|sata|ide|mp|unused)(\d+)$/);
     if (!match) {
-      throw new Error('Invalid disk name format. Expected: scsi0-15, virtio0-15, sata0-5, ide0-3, efidisk0, tpmstate0, rootfs, or mp0-255');
+      throw new Error('Invalid disk name format. Expected: scsi0-30, virtio0-15, sata0-5, ide0-3, efidisk0, tpmstate0, rootfs, mp0-255, or unusedN');
     }
 
     const [, prefix, numStr] = match;
@@ -144,15 +144,16 @@ export class ProxmoxServer {
     }
 
     const maxByPrefix = {
-      scsi: 15,
+      scsi: 30,
       virtio: 15,
       sata: 5,
       ide: 3,
       mp: 255,
+      unused: Number.POSITIVE_INFINITY,
     };
 
     const max = maxByPrefix[prefix];
-    if (num > max) {
+    if (Number.isFinite(max) && num > max) {
       throw new Error(`Disk number out of range for ${prefix} (max: ${prefix}${max})`);
     }
 
@@ -178,9 +179,9 @@ export class ProxmoxServer {
     if (!bridge || typeof bridge !== 'string') {
       throw new Error('Bridge name is required and must be a string');
     }
-    // Proxmox bridges: vmbr0-999 or custom names (alphanumeric, hyphens, underscores)
-    if (!/^[a-zA-Z0-9\-_]+$/.test(bridge)) {
-      throw new Error('Invalid bridge name format. Only alphanumeric, hyphens, and underscores allowed');
+    // Proxmox bridge identifiers may also contain dots, e.g. vmbr0.100.
+    if (!/^[a-zA-Z0-9._-]+$/.test(bridge)) {
+      throw new Error('Invalid bridge name format. Only alphanumeric, periods, hyphens, and underscores allowed');
     }
     if (bridge.length > 32) {
       throw new Error('Bridge name too long (max 32 characters)');
