@@ -2505,10 +2505,12 @@ export class ProxmoxServer {
       output += `• **Size**: ${size} GB\n`;
       output += `• **Task ID**: ${result || 'N/A'}\n\n`;
       output += `**Disk naming conventions**:\n`;
-      output += `  - SCSI: scsi0-15\n`;
+      output += `  - SCSI: scsi0-30\n`;
       output += `  - VirtIO: virtio0-15\n`;
       output += `  - SATA: sata0-5\n`;
-      output += `  - IDE: ide0-3\n\n`;
+      output += `  - IDE: ide0-3\n`;
+      output += `  - Mount points: mp0-255\n`;
+      output += `  - Special disks: rootfs, efidisk0, tpmstate0, unusedN\n\n`;
       output += `**Note**: The VM may need to be stopped for this operation depending on configuration.\n`;
 
       return {
