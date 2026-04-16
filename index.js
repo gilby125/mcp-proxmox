@@ -183,16 +183,18 @@ export class ProxmoxServer {
                     `Known nodes: ${known.join(', ')}.`
                   );
                 }
-                if (canonical && canonical === badName) {
-                  // The node name is correct; 596 came from something else
-                  // (proxy timeout, cert issue on target node, transient).
+                if (canonical === badName) {
+                  // Exact match on a known cluster member, but still 596 — the
+                  // node exists and pveproxy still failed to proxy to it.
+                  // Likely proxy timeout, cert mismatch for that node's
+                  // pve-ssl.pem, or a transient forwarded-request failure.
                   // Do not emit a misleading "unknown node" hint.
                   throw new Error(
                     `Proxmox returned 596 proxying to node "${badName}". ` +
-                    `The node exists in the cluster, so this is likely a ` +
-                    `proxy-side issue (timeout, certificate, or transient ` +
-                    `upstream failure). See ` +
-                    `https://forum.proxmox.com/threads/http-596-error-when-trying-to-use-the-api.102268/`
+                    `The node is a known cluster member; the 596 likely ` +
+                    `indicates a proxy timeout, certificate issue, or ` +
+                    `forwarded-request failure. ` +
+                    `See https://forum.proxmox.com/threads/http-596-error-when-trying-to-use-the-api.102268/`
                   );
                 }
                 throw new Error(
@@ -3226,8 +3228,7 @@ export class ProxmoxServer {
 
 // Only start the server when this module is executed directly.
 // Import-safe so test files can construct ProxmoxServer without triggering a
-// stdio transport. (Pattern matches PR #4; included here to make the new
-// test/proxmoxRequest.test.js file self-contained.)
+// stdio transport.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = new ProxmoxServer();
   server.run().catch(console.error);

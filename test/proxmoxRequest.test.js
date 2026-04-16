@@ -196,26 +196,28 @@ test('proxmoxRequest: 596 on /nodes/... when /nodes returns malformed JSON, fall
   );
 });
 
-test('proxmoxRequest: 596 on /nodes/{exact-match}/... emits proxy-side hint, no "Did you mean"', async () => {
-  // Node name exactly matches a known cluster node, yet 596 still came back —
-  // the cause is NOT a name mismatch (proxy timeout, cert, transient upstream).
-  // Must not emit a misleading "unknown node" / "Did you mean" hint.
+test('proxmoxRequest: 596 on /nodes/{exact-case-match}/... surfaces generic 596 (not "unknown")', async () => {
   const server = createServer();
+  const calls = [];
   server.fetch = async (url) => {
+    calls.push(url);
     if (url.endsWith('/api2/json/nodes')) {
       return mockResponse({
         ok: true, status: 200,
         bodyText: JSON.stringify({ data: [{ node: 'Pve1' }, { node: 'Pve2' }] }),
       });
     }
-    return mockResponse({ ok: false, status: 596, bodyText: 'upstream connection refused' });
+    // Pve1 is a real cluster node, but this specific request still returns 596 —
+    // plausible causes: proxy timeout, cert issue, forwarded-request failure.
+    return mockResponse({ ok: false, status: 596, bodyText: 'proxy timeout' });
   };
 
   await assert.rejects(
     server.proxmoxRequest('/nodes/Pve1/lxc/100/status/current'),
-    (err) => /The node exists in the cluster/.test(err.message) &&
-            /proxy-side issue/.test(err.message) &&
+    (err) => /known cluster member/i.test(err.message) &&
+            /proxy timeout|cert issue|forwarded-request/i.test(err.message) &&
             !/Did you mean/.test(err.message) &&
             !/unknown to the cluster/.test(err.message)
   );
+  assert.equal(calls.length, 2, 'exactly one main call + one /nodes probe');
 });
