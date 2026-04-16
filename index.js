@@ -34,7 +34,7 @@ try {
   console.error('Warning: Could not load .env file:', error.message);
 }
 
-class ProxmoxServer {
+export class ProxmoxServer {
   constructor() {
     this.server = new Server(
       {
@@ -59,7 +59,11 @@ class ProxmoxServer {
     this.httpsAgent = new https.Agent({
       rejectUnauthorized: false
     });
-    
+
+    // Inject fetch on the instance so tests can override it without touching
+    // the module-level import. Production code always uses node-fetch.
+    this.fetch = fetch;
+
     this.setupToolHandlers();
   }
 
@@ -140,10 +144,56 @@ class ProxmoxServer {
     }
 
     try {
-      const response = await fetch(url, options);
+      const response = await this.fetch(url, options);
 
       if (!response.ok) {
         const errorText = await response.text();
+
+        // Helpful error when pveproxy returns 596 for a node-scoped endpoint.
+        // 596 is Proxmox's proxy-failure umbrella code. Its most common trigger
+        // for callers is a node-name mismatch — Proxmox's cluster-node lookup is
+        // a case-sensitive Perl hash lookup (see pve-cluster/src/PVE/Cluster.pm
+        // :: check_node_exists / remote_node_ip). When the name we pass is not
+        // a cluster member, pveproxy cannot forward the request and emits 596.
+        // Authoritative explanation:
+        // https://forum.proxmox.com/threads/http-596-error-when-trying-to-use-the-api.102268/
+        if (response.status === 596) {
+          const nodeMatch = endpoint.match(/^\/nodes\/([^\/]+)/);
+          if (nodeMatch && endpoint !== '/nodes') {
+            const badName = nodeMatch[1];
+            try {
+              const nodesResp = await this.fetch(`${baseUrl}/nodes`, {
+                method: 'GET', headers, agent: this.httpsAgent,
+              });
+              if (nodesResp.ok) {
+                const nodesBody = JSON.parse(await nodesResp.text());
+                const known = (nodesBody.data || []).map((n) => n.node);
+                const canonical = known.find(
+                  (n) => n.toLowerCase() === badName.toLowerCase()
+                );
+                if (canonical && canonical !== badName) {
+                  throw new Error(
+                    `Proxmox returned 596 proxying to node "${badName}". ` +
+                    `Node name does not match a cluster member ` +
+                    `(lookup is case-sensitive). ` +
+                    `Did you mean "${canonical}"? ` +
+                    `Known nodes: ${known.join(', ')}.`
+                  );
+                }
+                throw new Error(
+                  `Proxmox returned 596 proxying to node "${badName}". ` +
+                  `The node is unknown to the cluster. ` +
+                  `Known nodes: ${known.join(', ')}. ` +
+                  `Other 596 causes include proxy timeouts and cert issues.`
+                );
+              }
+            } catch (lookupErr) {
+              if (lookupErr.message.startsWith('Proxmox returned 596')) throw lookupErr;
+              // Fall through to the generic error below if /nodes also fails.
+            }
+          }
+        }
+
         throw new Error(`Proxmox API error: ${response.status} - ${errorText}`);
       }
 
@@ -158,7 +208,19 @@ class ProxmoxServer {
       if (error.name === 'SyntaxError') {
         throw new Error(`Failed to parse Proxmox API response: ${error.message}`);
       }
-      throw new Error(`Failed to connect to Proxmox: ${error.message}`);
+      // Only wrap as "connection error" for genuine network-layer failures.
+      // Proxmox API errors (401/403/404/596/etc.) already carry the correct
+      // semantics in error.message and should pass through unchanged.
+      const isNetworkError =
+        ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET', 'EHOSTUNREACH']
+          .includes(error.code) ||
+        error.name === 'FetchError' ||
+        (error.name === 'TypeError' && /fetch failed/i.test(error.message));
+      if (isNetworkError) {
+        throw new Error(`Failed to connect to Proxmox: ${error.message}`);
+      }
+      // Re-throw so callers see the real error (Proxmox API, parse, etc.).
+      throw error;
     }
   }
 
@@ -3144,5 +3206,11 @@ class ProxmoxServer {
   }
 }
 
-const server = new ProxmoxServer();
-server.run().catch(console.error);
+// Only start the server when this module is executed directly.
+// Import-safe so test files can construct ProxmoxServer without triggering a
+// stdio transport. (Pattern matches PR #4; included here to make the new
+// test/proxmoxRequest.test.js file self-contained.)
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const server = new ProxmoxServer();
+  server.run().catch(console.error);
+}
