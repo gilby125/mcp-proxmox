@@ -65,6 +65,8 @@ export class ProxmoxServer {
     this.httpsAgent = new https.Agent({
       rejectUnauthorized: false
     });
+
+    this.fetch = fetch;
     
     this.setupToolHandlers();
   }
@@ -257,10 +259,63 @@ export class ProxmoxServer {
     }
 
     try {
-      const response = await fetch(url, options);
+      const response = await this.fetch(url, options);
 
       if (!response.ok) {
         const errorText = await response.text();
+        if (response.status === 596 && /no such cluster node/i.test(errorText)) {
+          const nodeMatch = endpoint.match(/^\/nodes\/([^/]+)/);
+          if (nodeMatch) {
+            const requestedNode = nodeMatch[1];
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+            try {
+              const nodesResponse = await this.fetch(`${baseUrl}/nodes`, {
+                method: 'GET',
+                headers,
+                agent: this.httpsAgent,
+                signal: controller.signal
+              });
+
+              if (nodesResponse.ok) {
+                const nodesBody = JSON.parse(await nodesResponse.text());
+                const knownNodes = (nodesBody.data || [])
+                  .map((node) => node?.node)
+                  .filter((node) => typeof node === 'string');
+                const canonicalNode = knownNodes.find(
+                  (node) => node.toLowerCase() === requestedNode.toLowerCase()
+                );
+
+                if (canonicalNode && canonicalNode !== requestedNode) {
+                  throw new Error(
+                    `Proxmox returned 596 proxying to node "${requestedNode}". ` +
+                    `Node name does not match a cluster member ` +
+                    `(lookup is case-sensitive). ` +
+                    `Did you mean "${canonicalNode}"? ` +
+                    `Known nodes: ${knownNodes.join(', ')}.`
+                  );
+                }
+
+                if (!canonicalNode) {
+                  throw new Error(
+                    `Proxmox returned 596 proxying to node "${requestedNode}". ` +
+                    `The node is unknown to the cluster. ` +
+                    `Known nodes: ${knownNodes.join(', ')}. ` +
+                    `Other 596 causes include proxy timeouts and cert issues.`
+                  );
+                }
+              }
+            } catch (lookupError) {
+              if (lookupError.message?.startsWith('Proxmox returned 596')) {
+                throw lookupError;
+              }
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+
         throw new Error(`Proxmox API error: ${response.status} - ${errorText}`);
       }
 
@@ -275,7 +330,17 @@ export class ProxmoxServer {
       if (error.name === 'SyntaxError') {
         throw new Error(`Failed to parse Proxmox API response: ${error.message}`);
       }
-      throw new Error(`Failed to connect to Proxmox: ${error.message}`);
+      const isNetworkError =
+        ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET', 'EHOSTUNREACH']
+          .includes(error.code) ||
+        error.name === 'FetchError' ||
+        (error.name === 'TypeError' && /fetch failed/i.test(error.message));
+
+      if (isNetworkError) {
+        throw new Error(`Failed to connect to Proxmox: ${error.message}`);
+      }
+
+      throw error;
     }
   }
 
