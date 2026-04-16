@@ -208,14 +208,14 @@ test('proxmoxRequest: 596 on /nodes/{exact-case-match}/... surfaces generic 596 
       });
     }
     // Pve1 is a real cluster node, but this specific request still returns 596 —
-    // plausible causes: proxy timeout, cert issue, forwarded-request failure.
+    // plausible causes: proxy timeout, certificate issue, forwarded-request failure.
     return mockResponse({ ok: false, status: 596, bodyText: 'proxy timeout' });
   };
 
   await assert.rejects(
     server.proxmoxRequest('/nodes/Pve1/lxc/100/status/current'),
     (err) => /known cluster member/i.test(err.message) &&
-            /proxy timeout|cert issue|forwarded-request/i.test(err.message) &&
+            /proxy timeout|certificate issue|forwarded-request/i.test(err.message) &&
             !/Did you mean/.test(err.message) &&
             !/unknown to the cluster/.test(err.message)
   );
