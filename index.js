@@ -159,11 +159,14 @@ export class ProxmoxServer {
         // https://forum.proxmox.com/threads/http-596-error-when-trying-to-use-the-api.102268/
         if (response.status === 596) {
           const nodeMatch = endpoint.match(/^\/nodes\/([^\/]+)/);
-          if (nodeMatch && endpoint !== '/nodes') {
+          if (nodeMatch) {
             const badName = nodeMatch[1];
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
             try {
               const nodesResp = await this.fetch(`${baseUrl}/nodes`, {
                 method: 'GET', headers, agent: this.httpsAgent,
+                signal: controller.signal,
               });
               if (nodesResp.ok) {
                 const nodesBody = JSON.parse(await nodesResp.text());
@@ -180,6 +183,18 @@ export class ProxmoxServer {
                     `Known nodes: ${known.join(', ')}.`
                   );
                 }
+                if (canonical && canonical === badName) {
+                  // The node name is correct; 596 came from something else
+                  // (proxy timeout, cert issue on target node, transient).
+                  // Do not emit a misleading "unknown node" hint.
+                  throw new Error(
+                    `Proxmox returned 596 proxying to node "${badName}". ` +
+                    `The node exists in the cluster, so this is likely a ` +
+                    `proxy-side issue (timeout, certificate, or transient ` +
+                    `upstream failure). See ` +
+                    `https://forum.proxmox.com/threads/http-596-error-when-trying-to-use-the-api.102268/`
+                  );
+                }
                 throw new Error(
                   `Proxmox returned 596 proxying to node "${badName}". ` +
                   `The node is unknown to the cluster. ` +
@@ -189,7 +204,10 @@ export class ProxmoxServer {
               }
             } catch (lookupErr) {
               if (lookupErr.message.startsWith('Proxmox returned 596')) throw lookupErr;
-              // Fall through to the generic error below if /nodes also fails.
+              // Fall through to the generic error below if /nodes also fails
+              // (non-ok response, parse failure, or abort/timeout).
+            } finally {
+              clearTimeout(timeoutId);
             }
           }
         }

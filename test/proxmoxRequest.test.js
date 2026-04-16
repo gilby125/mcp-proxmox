@@ -4,9 +4,6 @@
 // endpoints. Uses Node's built-in test runner (`node --test`) and
 // instance-level fetch injection (`server.fetch = ...`). No new deps.
 //
-// Style matches the existing tests added in PR #4 (test/getVMs.lxc-node.test.js)
-// and PR #5 (test/validation.identifiers.test.js).
-//
 // Node names (Pve1/Pve2/Pve3) and VMID (100) are illustrative only.
 
 import test from 'node:test';
@@ -196,5 +193,29 @@ test('proxmoxRequest: 596 on /nodes/... when /nodes returns malformed JSON, fall
     (err) => err.message.startsWith('Proxmox API error: 596') &&
             !/Did you mean/.test(err.message) &&
             !/Failed to parse/.test(err.message)
+  );
+});
+
+test('proxmoxRequest: 596 on /nodes/{exact-match}/... emits proxy-side hint, no "Did you mean"', async () => {
+  // Node name exactly matches a known cluster node, yet 596 still came back —
+  // the cause is NOT a name mismatch (proxy timeout, cert, transient upstream).
+  // Must not emit a misleading "unknown node" / "Did you mean" hint.
+  const server = createServer();
+  server.fetch = async (url) => {
+    if (url.endsWith('/api2/json/nodes')) {
+      return mockResponse({
+        ok: true, status: 200,
+        bodyText: JSON.stringify({ data: [{ node: 'Pve1' }, { node: 'Pve2' }] }),
+      });
+    }
+    return mockResponse({ ok: false, status: 596, bodyText: 'upstream connection refused' });
+  };
+
+  await assert.rejects(
+    server.proxmoxRequest('/nodes/Pve1/lxc/100/status/current'),
+    (err) => /The node exists in the cluster/.test(err.message) &&
+            /proxy-side issue/.test(err.message) &&
+            !/Did you mean/.test(err.message) &&
+            !/unknown to the cluster/.test(err.message)
   );
 });
