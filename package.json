@@ -4,6 +4,17 @@
   "description": "MCP server for Proxmox virtualization management",
   "main": "index.js",
   "type": "module",
+  "bin": {
+    "mcp-proxmox": "index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",

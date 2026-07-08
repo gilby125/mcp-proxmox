@@ -67,8 +67,8 @@ test('executeVMCommand refuses LXC without calling the missing exec endpoint', a
 test('executeVMCommand sends the QEMU command as a list of args', async () => {
   const s = makeServer();
   const calls = recordRequests(s, () => ({ pid: 42 }));
-  await s.executeVMCommand('pve1', '100', 'ls -la /tmp', 'qemu');
-  const exec = calls.find(c => c.endpoint.endsWith('/agent/exec'));
+  await s.executeVMCommand('pve1', '100', 'ls -la /tmp', 'qemu', false);
+  const exec = calls.find(c => c.endpoint.includes('/agent/exec') && c.method === 'POST');
   assert.deepEqual(exec.body.command, ['ls', '-la', '/tmp']);
 });
 
