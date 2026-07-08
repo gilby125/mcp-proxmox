@@ -2,7 +2,14 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -44,6 +51,8 @@ export class ProxmoxServer {
       {
         capabilities: {
           tools: {},
+          resources: {},
+          prompts: {},
         },
       }
     );
@@ -60,15 +69,165 @@ export class ProxmoxServer {
     }
     this.proxmoxPort = process.env.PROXMOX_PORT || '8006';
     this.allowElevated = process.env.PROXMOX_ALLOW_ELEVATED === 'true';
-    
-    // Create agent that accepts self-signed certificates
+
+    // TLS verification. Proxmox ships with a self-signed certificate, so the
+    // default stays off for out-of-the-box compatibility, but operators with a
+    // proper CA-signed cert can opt into verification with PROXMOX_VERIFY_TLS=true.
+    this.verifyTls = process.env.PROXMOX_VERIFY_TLS === 'true';
     this.httpsAgent = new https.Agent({
-      rejectUnauthorized: false
+      rejectUnauthorized: this.verifyTls
     });
 
+    // Optional allowlists scope which nodes / VMIDs the server may touch.
+    // Comma-separated; empty means "no restriction".
+    this.nodeAllowlist = this.parseAllowlist(process.env.PROXMOX_NODE_ALLOWLIST);
+    this.vmidAllowlist = this.parseAllowlist(process.env.PROXMOX_VMID_ALLOWLIST);
+
     this.fetch = fetch;
-    
+
     this.setupToolHandlers();
+    this.setupResourceHandlers();
+    this.setupPromptHandlers();
+  }
+
+  // Browsable, read-only views of the cluster. Resources let clients pull
+  // structured cluster state without invoking a tool.
+  setupResourceHandlers() {
+    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: [
+        {
+          uri: 'proxmox://nodes',
+          name: 'Cluster nodes',
+          description: 'All Proxmox nodes with status and resource usage (JSON)',
+          mimeType: 'application/json',
+        },
+        {
+          uri: 'proxmox://vms',
+          name: 'All guests',
+          description: 'Every VM and container across the cluster with node placement (JSON)',
+          mimeType: 'application/json',
+        },
+        {
+          uri: 'proxmox://storage',
+          name: 'Storage pools',
+          description: 'Storage pools and usage across the cluster (JSON)',
+          mimeType: 'application/json',
+        },
+      ],
+    }));
+
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const uri = request.params.uri;
+      let payload;
+      try {
+        payload = await this.readResourcePayload(uri);
+      } catch (error) {
+        payload = { error: error.message };
+      }
+      return {
+        contents: [{
+          uri,
+          mimeType: 'application/json',
+          text: JSON.stringify(payload ?? null, null, 2),
+        }],
+      };
+    });
+  }
+
+  async readResourcePayload(uri) {
+    if (uri === 'proxmox://nodes') {
+      return this.proxmoxRequest('/nodes');
+    }
+    if (uri === 'proxmox://vms') {
+      return this.proxmoxRequest('/cluster/resources?type=vm');
+    }
+    if (uri === 'proxmox://storage') {
+      return this.proxmoxRequest('/cluster/resources?type=storage');
+    }
+    throw new Error(`Unknown resource: ${uri}`);
+  }
+
+  // Templated workflows exposed as MCP prompts.
+  setupPromptHandlers() {
+    const prompts = [
+      {
+        name: 'provision_lxc',
+        description: 'Guided workflow to provision a new LXC container end to end',
+        arguments: [
+          { name: 'distro', description: 'Distribution, e.g. debian-12 or ubuntu-22.04', required: false },
+          { name: 'purpose', description: 'What the container is for (sizing hint)', required: false },
+        ],
+      },
+      {
+        name: 'health_check',
+        description: 'Review overall cluster health and flag anything concerning',
+        arguments: [],
+      },
+      {
+        name: 'diagnose_permissions',
+        description: 'Diagnose an "elevated permissions" or access error for the current token',
+        arguments: [],
+      },
+    ];
+
+    this.promptDefinitions = prompts;
+
+    this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts }));
+
+    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      const { name, arguments: pArgs = {} } = request.params;
+      const text = this.getPromptText(name, pArgs);
+      return {
+        messages: [{ role: 'user', content: { type: 'text', text } }],
+      };
+    });
+  }
+
+  getPromptText(name, pArgs = {}) {
+    let text;
+    {
+      if (name === 'provision_lxc') {
+        const distro = pArgs.distro || 'debian-12';
+        const purpose = pArgs.purpose ? ` intended for ${pArgs.purpose}` : '';
+        text = `Provision a new LXC container${purpose} running ${distro}.\n\n` +
+          `Steps:\n` +
+          `1. Call proxmox_get_nodes and pick a node with free capacity.\n` +
+          `2. Call proxmox_list_templates on that node; confirm a ${distro} template exists (download it if not).\n` +
+          `3. Call proxmox_get_next_vmid for a free ID.\n` +
+          `4. Call proxmox_create_lxc with sensible cores/memory/disk for the purpose.\n` +
+          `5. Call proxmox_start_lxc, then poll proxmox_get_task_status until it finishes.\n` +
+          `6. Report the container ID, node, and how to reach it.`;
+      } else if (name === 'health_check') {
+        text = `Perform a Proxmox cluster health check.\n\n` +
+          `1. proxmox_get_cluster_status and proxmox_get_nodes — flag any node not online or with high CPU/memory.\n` +
+          `2. proxmox_get_storage — flag any pool above 85% usage.\n` +
+          `3. proxmox_get_vms — note stopped guests that are expected to run.\n` +
+          `4. proxmox_get_ha_resources — confirm HA resources are in their desired state.\n` +
+          `Summarize findings with concrete numbers and a short prioritized action list.`;
+      } else if (name === 'diagnose_permissions') {
+        text = `The user hit a permissions error. Diagnose it:\n\n` +
+          `1. Call proxmox_whoami to see the token's user and effective permissions.\n` +
+          `2. Compare the required privilege for the failed action against what the token has.\n` +
+          `3. State exactly which privilege/path is missing and whether PROXMOX_ALLOW_ELEVATED needs to be set.\n` +
+          `4. Give the precise pveum command or UI steps to grant it.`;
+      } else {
+        throw new Error(`Unknown prompt: ${name}`);
+      }
+    }
+    return text;
+  }
+
+  parseAllowlist(raw) {
+    if (!raw || typeof raw !== 'string') {
+      return null;
+    }
+    const entries = raw.split(',').map(s => s.trim()).filter(Boolean);
+    return entries.length > 0 ? new Set(entries) : null;
+  }
+
+  // Pause execution; overridable in tests so polling loops resolve instantly.
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // Input validation methods for security
@@ -83,6 +242,12 @@ export class ProxmoxServer {
     if (node.length > 64) {
       throw new Error('Node name too long (max 64 characters)');
     }
+    if (this.nodeAllowlist && !this.nodeAllowlist.has(node)) {
+      throw new Error(
+        `Node "${node}" is not in PROXMOX_NODE_ALLOWLIST. ` +
+        `Allowed nodes: ${[...this.nodeAllowlist].join(', ')}`
+      );
+    }
     return node;
   }
 
@@ -94,7 +259,14 @@ export class ProxmoxServer {
     if (isNaN(id) || id < 100 || id > 999999999) {
       throw new Error('Invalid VM ID. Must be a number between 100 and 999999999');
     }
-    return id.toString();
+    const idStr = id.toString();
+    if (this.vmidAllowlist && !this.vmidAllowlist.has(idStr)) {
+      throw new Error(
+        `VMID ${idStr} is not in PROXMOX_VMID_ALLOWLIST. ` +
+        `Allowed VMIDs: ${[...this.vmidAllowlist].join(', ')}`
+      );
+    }
+    return idStr;
   }
 
   validateGuestType(type, fallback = 'qemu') {
@@ -234,6 +406,55 @@ export class ProxmoxServer {
     }
 
     return command;
+  }
+
+  validateUPID(upid) {
+    if (!upid || typeof upid !== 'string') {
+      throw new Error('UPID is required and must be a string');
+    }
+    // Proxmox task UPIDs look like:
+    // UPID:node:0000ABCD:12345678:5F3A1B2C:vzdump:100:root@pam:
+    // Allow the documented character set only, so it is safe to interpolate
+    // into the tasks path.
+    if (!/^UPID:[^:]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+:[^:]+:[^:]*:[^:]+:$/.test(upid)) {
+      throw new Error('Invalid UPID format');
+    }
+    if (upid.length > 256) {
+      throw new Error('UPID too long (max 256 characters)');
+    }
+    return upid;
+  }
+
+  // Build an MCP tool result carrying both human-readable text and a machine
+  // readable structuredContent payload, so agents can chain on the data
+  // instead of regex-parsing prose. Older MCP clients simply ignore the extra
+  // field and render the text.
+  respond(text, structured = undefined, isError = false) {
+    const result = { content: [{ type: 'text', text }] };
+    if (structured !== undefined) {
+      result.structuredContent = structured;
+    }
+    if (isError) {
+      result.isError = true;
+    }
+    return result;
+  }
+
+  // Extract a UPID from a mutating-endpoint response. Proxmox returns the UPID
+  // either as a bare string or wrapped in an object.
+  extractUPID(result) {
+    if (typeof result === 'string' && result.startsWith('UPID:')) {
+      return result;
+    }
+    if (result && typeof result === 'object') {
+      for (const key of ['upid', 'UPID', 'data']) {
+        const val = result[key];
+        if (typeof val === 'string' && val.startsWith('UPID:')) {
+          return val;
+        }
+      }
+    }
+    return null;
   }
 
   generateSecurePassword() {
@@ -407,7 +628,8 @@ export class ProxmoxServer {
               node: { type: 'string', description: 'Node name where VM is located' },
               vmid: { type: 'string', description: 'VM ID number' },
               command: { type: 'string', description: 'Shell command to execute' },
-              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'VM type', default: 'qemu' }
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'VM type', default: 'qemu' },
+              wait: { type: 'boolean', description: 'Poll the guest agent for the result (stdout/exit code) instead of only returning the PID (default: true)', default: true }
             },
             required: ['node', 'vmid', 'command']
           }
@@ -1096,6 +1318,147 @@ export class ProxmoxServer {
               include_provider: { type: 'boolean', description: 'Include terraform/provider scaffolding block (default: true)', default: true }
             }
           }
+        },
+        {
+          name: 'proxmox_get_task_status',
+          description: 'Get the status of a Proxmox task by UPID (the identifier returned by mutating operations like create/clone/backup/migrate). Optionally wait for the task to finish and report its exit status.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node the task is running on' },
+              upid: { type: 'string', description: 'Task UPID, e.g. UPID:pve1:0000ABCD:...:vzdump:100:root@pam:' },
+              wait: { type: 'boolean', description: 'Poll until the task finishes (default: false)', default: false },
+              timeout: { type: 'number', description: 'Max seconds to wait when wait=true (default: 60, max: 600)', default: 60 }
+            },
+            required: ['node', 'upid']
+          }
+        },
+        {
+          name: 'proxmox_get_vm_config',
+          description: 'Get the full configuration of a VM or LXC container (cores, memory, disks, network, cloud-init, etc.)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node where the guest is located' },
+              vmid: { type: 'string', description: 'VM/container ID' },
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'Guest type', default: 'qemu' }
+            },
+            required: ['node', 'vmid']
+          }
+        },
+        {
+          name: 'proxmox_whoami',
+          description: 'Show the identity the server authenticates as and the permissions the API token actually has. Use this to diagnose "requires elevated permissions" errors.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Optional: check permissions for a specific ACL path (e.g. /vms/100)' }
+            }
+          }
+        },
+        {
+          name: 'proxmox_migrate_vm',
+          description: 'Migrate a VM or LXC container to another node (requires elevated permissions)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Current node hosting the guest' },
+              vmid: { type: 'string', description: 'VM/container ID' },
+              target: { type: 'string', description: 'Destination node' },
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'Guest type', default: 'qemu' },
+              online: { type: 'boolean', description: 'QEMU: live-migrate a running VM. LXC: use restart migration.', default: false },
+              wait: { type: 'boolean', description: 'Wait for the migration task to finish (default: false)', default: false }
+            },
+            required: ['node', 'vmid', 'target']
+          }
+        },
+        {
+          name: 'proxmox_get_guest_ips',
+          description: "Discover a running VM's real IP addresses via the QEMU guest agent (qemu only; requires elevated permissions and a running guest agent)",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node where the VM is located' },
+              vmid: { type: 'string', description: 'VM ID' }
+            },
+            required: ['node', 'vmid']
+          }
+        },
+        {
+          name: 'proxmox_convert_to_template',
+          description: 'Convert a VM or LXC container into a template (irreversible; requires elevated permissions). Pairs with the clone tools for a golden-image workflow.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node where the guest is located' },
+              vmid: { type: 'string', description: 'VM/container ID' },
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'Guest type', default: 'qemu' }
+            },
+            required: ['node', 'vmid']
+          }
+        },
+        {
+          name: 'proxmox_set_cloudinit',
+          description: 'Set cloud-init options on a QEMU VM (user, password, SSH keys, IP config, DNS). Requires a cloud-init drive on the VM and elevated permissions.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node where the VM is located' },
+              vmid: { type: 'string', description: 'VM ID' },
+              ciuser: { type: 'string', description: 'Default cloud-init user' },
+              cipassword: { type: 'string', description: 'Password for the cloud-init user' },
+              sshkeys: { type: 'string', description: 'One or more public SSH keys (newline separated)' },
+              ipconfig0: { type: 'string', description: 'IP config for net0, e.g. ip=192.168.1.50/24,gw=192.168.1.1 or ip=dhcp' },
+              nameserver: { type: 'string', description: 'DNS nameserver(s)' },
+              searchdomain: { type: 'string', description: 'DNS search domain' }
+            },
+            required: ['node', 'vmid']
+          }
+        },
+        {
+          name: 'proxmox_get_rrd_data',
+          description: 'Get historical performance metrics (CPU, memory, disk, network time series) for a VM/container or a node, for capacity planning.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node name' },
+              vmid: { type: 'string', description: 'Optional: VM/container ID. Omit for node-level metrics.' },
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'Guest type (when vmid is given)', default: 'qemu' },
+              timeframe: { type: 'string', enum: ['hour', 'day', 'week', 'month', 'year'], description: 'Time window', default: 'day' }
+            },
+            required: ['node']
+          }
+        },
+        {
+          name: 'proxmox_get_pools',
+          description: 'List resource pools and their members (read-only observability)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              poolid: { type: 'string', description: 'Optional: show members of a specific pool' }
+            }
+          }
+        },
+        {
+          name: 'proxmox_get_ha_resources',
+          description: 'List High Availability resources and their configured state (read-only observability)',
+          inputSchema: {
+            type: 'object',
+            properties: {}
+          }
+        },
+        {
+          name: 'proxmox_get_firewall_rules',
+          description: 'List firewall rules at the cluster level, a node, or a specific guest (read-only observability)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              level: { type: 'string', enum: ['cluster', 'node', 'guest'], description: 'Which firewall ruleset to read', default: 'cluster' },
+              node: { type: 'string', description: 'Node name (required for level=node or level=guest)' },
+              vmid: { type: 'string', description: 'VM/container ID (required for level=guest)' },
+              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'Guest type (for level=guest)', default: 'qemu' }
+            }
+          }
         }
       ]
     }));
@@ -1118,7 +1481,7 @@ export class ProxmoxServer {
             return await this.getVMStatus(args.node, args.vmid, args.type);
             
           case 'proxmox_execute_vm_command':
-            return await this.executeVMCommand(args.node, args.vmid, args.command, args.type);
+            return await this.executeVMCommand(args.node, args.vmid, args.command, args.type, args.wait);
             
           case 'proxmox_get_storage':
             return await this.getStorage(args.node);
@@ -1273,6 +1636,39 @@ export class ProxmoxServer {
           case 'proxmox_generate_terraform':
             return await this.generateTerraform(args.node, args.vmid, args.type, args.include_provider);
 
+          case 'proxmox_get_task_status':
+            return await this.getTaskStatus(args.node, args.upid, args.wait, args.timeout);
+
+          case 'proxmox_get_vm_config':
+            return await this.getVMConfig(args.node, args.vmid, args.type);
+
+          case 'proxmox_whoami':
+            return await this.whoami(args.path);
+
+          case 'proxmox_migrate_vm':
+            return await this.migrateGuest(args.node, args.vmid, args.target, args.type, args.online, args.wait);
+
+          case 'proxmox_get_guest_ips':
+            return await this.getGuestIPs(args.node, args.vmid);
+
+          case 'proxmox_convert_to_template':
+            return await this.convertToTemplate(args.node, args.vmid, args.type);
+
+          case 'proxmox_set_cloudinit':
+            return await this.setCloudInit(args);
+
+          case 'proxmox_get_rrd_data':
+            return await this.getRRDData(args.node, args.vmid, args.type, args.timeframe);
+
+          case 'proxmox_get_pools':
+            return await this.getPools(args.poolid);
+
+          case 'proxmox_get_ha_resources':
+            return await this.getHAResources();
+
+          case 'proxmox_get_firewall_rules':
+            return await this.getFirewallRules(args.level, args.node, args.vmid, args.type);
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -1308,10 +1704,19 @@ export class ProxmoxServer {
       output += `   • Memory: ${memUsage}\n`;
       output += `   • Load: ${node.loadavg?.[0]?.toFixed(2) || 'N/A'}\n\n`;
     }
-    
-    return {
-      content: [{ type: 'text', text: output }]
-    };
+
+    return this.respond(output, {
+      count: nodes.length,
+      nodes: nodes.map(n => ({
+        node: n.node,
+        status: n.status,
+        uptime: n.uptime ?? null,
+        cpu: typeof n.cpu === 'number' ? n.cpu : null,
+        maxcpu: n.maxcpu ?? null,
+        mem: n.mem ?? null,
+        maxmem: n.maxmem ?? null,
+      })),
+    });
   }
 
   async getNodeStatus(node) {
@@ -1340,62 +1745,76 @@ export class ProxmoxServer {
       output += `• **Root Disk**: ${status.rootfs ?
         `${this.formatBytes(status.rootfs.used)} / ${this.formatBytes(status.rootfs.total)} (${((status.rootfs.used / status.rootfs.total) * 100).toFixed(1)}%)` : 'N/A'}\n`;
 
-      return {
-        content: [{ type: 'text', text: output }]
-      };
+      return this.respond(output, { node: safeNode, status });
     } catch (error) {
-      return {
-        content: [{
-          type: 'text',
-          text: `❌ **Failed to get node status**\n\nError: ${error.message}`
-        }]
-      };
+      return this.respond(
+        `❌ **Failed to get node status**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
     }
   }
 
-  async getVMs(nodeFilter = null, typeFilter = 'all') {
-    let vms = [];
-    
-    if (nodeFilter) {
-      const safeNodeFilter = this.validateNodeName(nodeFilter);
-      const nodeVMs = await this.proxmoxRequest(`/nodes/${safeNodeFilter}/qemu`);
-      const nodeLXCs = await this.proxmoxRequest(`/nodes/${safeNodeFilter}/lxc`);
-      
-      if (typeFilter === 'all' || typeFilter === 'qemu') {
-        vms.push(...nodeVMs.map(vm => ({ ...vm, type: 'qemu', node: safeNodeFilter })));
+  // Enumerate guests one node at a time. Used as a fallback when
+  // /cluster/resources is unavailable (restricted token, older API).
+  async collectGuestsPerNode(nodeFilter, wantQemu, wantLxc) {
+    const vms = [];
+    const nodeNames = nodeFilter
+      ? [nodeFilter]
+      : (await this.proxmoxRequest('/nodes') || []).map(n => n.node);
+
+    for (const nodeName of nodeNames) {
+      if (wantQemu) {
+        const nodeVMs = await this.proxmoxRequest(`/nodes/${nodeName}/qemu`);
+        vms.push(...(nodeVMs || []).map(vm => ({ ...vm, type: 'qemu', node: nodeName })));
       }
-      if (typeFilter === 'all' || typeFilter === 'lxc') {
-        vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: safeNodeFilter })));
-      }
-    } else {
-      const nodes = await this.proxmoxRequest('/nodes');
-      
-      for (const node of nodes) {
-        if (typeFilter === 'all' || typeFilter === 'qemu') {
-          const nodeVMs = await this.proxmoxRequest(`/nodes/${node.node}/qemu`);
-          vms.push(...nodeVMs.map(vm => ({ ...vm, type: 'qemu', node: node.node })));
-        }
-        
-        if (typeFilter === 'all' || typeFilter === 'lxc') {
-          const nodeLXCs = await this.proxmoxRequest(`/nodes/${node.node}/lxc`);
-          vms.push(...nodeLXCs.map(vm => ({ ...vm, type: 'lxc', node: node.node })));
-        }
+      if (wantLxc) {
+        const nodeLXCs = await this.proxmoxRequest(`/nodes/${nodeName}/lxc`);
+        vms.push(...(nodeLXCs || []).map(vm => ({ ...vm, type: 'lxc', node: nodeName })));
       }
     }
-    
+    return vms;
+  }
+
+  async getVMs(nodeFilter = null, typeFilter = 'all') {
+    const safeNodeFilter = nodeFilter ? this.validateNodeName(nodeFilter) : null;
+    const wantQemu = typeFilter === 'all' || typeFilter === 'qemu';
+    const wantLxc = typeFilter === 'all' || typeFilter === 'lxc';
+
+    let vms = [];
+    try {
+      // One round-trip returns every guest with its node placement — the same
+      // call the Proxmox web UI uses, instead of looping node-by-node.
+      const resources = await this.proxmoxRequest('/cluster/resources?type=vm');
+      vms = (resources || [])
+        .filter(r => r && (r.type === 'qemu' || r.type === 'lxc'))
+        .map(r => ({ ...r, type: r.type, node: r.node }));
+    } catch (clusterError) {
+      vms = await this.collectGuestsPerNode(safeNodeFilter, wantQemu, wantLxc);
+    }
+
+    vms = vms.filter(vm => {
+      if (safeNodeFilter && vm.node !== safeNodeFilter) return false;
+      if (vm.type === 'qemu' && !wantQemu) return false;
+      if (vm.type === 'lxc' && !wantLxc) return false;
+      return true;
+    });
+
+    vms.sort((a, b) => parseInt(a.vmid) - parseInt(b.vmid));
+
     let output = '💻 **Virtual Machines**\n\n';
-    
+
     if (vms.length === 0) {
       output += 'No virtual machines found.\n';
     } else {
-      for (const vm of vms.sort((a, b) => parseInt(a.vmid) - parseInt(b.vmid))) {
+      for (const vm of vms) {
         const status = vm.status === 'running' ? '🟢' : vm.status === 'stopped' ? '🔴' : '🟡';
         const typeIcon = vm.type === 'qemu' ? '🖥️' : '📦';
         const uptime = vm.uptime ? this.formatUptime(vm.uptime) : 'N/A';
         const cpuUsage = vm.cpu ? `${(vm.cpu * 100).toFixed(1)}%` : 'N/A';
-        const memUsage = vm.mem && vm.maxmem ? 
+        const memUsage = vm.mem && vm.maxmem ?
           `${this.formatBytes(vm.mem)} / ${this.formatBytes(vm.maxmem)}` : 'N/A';
-        
+
         output += `${status} ${typeIcon} **${vm.name || `VM-${vm.vmid}`}** (ID: ${vm.vmid})\n`;
         output += `   • Node: ${vm.node}\n`;
         output += `   • Status: ${vm.status}\n`;
@@ -1408,10 +1827,24 @@ export class ProxmoxServer {
         output += '\n';
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }]
+
+    const structured = {
+      count: vms.length,
+      vms: vms.map(vm => ({
+        vmid: parseInt(vm.vmid, 10),
+        name: vm.name || null,
+        type: vm.type,
+        node: vm.node,
+        status: vm.status || null,
+        cpu: typeof vm.cpu === 'number' ? vm.cpu : null,
+        maxcpu: vm.maxcpu ?? null,
+        mem: vm.mem ?? null,
+        maxmem: vm.maxmem ?? null,
+        uptime: vm.uptime ?? null,
+      })),
     };
+
+    return this.respond(output, structured);
   }
 
   async getVMStatus(node, vmid, type = 'qemu') {
@@ -1442,18 +1875,19 @@ export class ProxmoxServer {
       output += `• **Network Out**: ${vmStatus.netout ? this.formatBytes(vmStatus.netout) : 'N/A'}\n`;
     }
 
-      return {
-        content: [{ type: 'text', text: output }]
-      };
+      return this.respond(output, {
+        node: safeNode,
+        vmid: parseInt(safeVMID, 10),
+        type: safeType,
+        status: vmStatus.status ?? null,
+        raw: vmStatus,
+      });
     } catch (error) {
-      return {
-        content: [{ type: 'text', text: `❌ Failed to get VM status: ${error.message}` }],
-        isError: true
-      };
+      return this.respond(`❌ Failed to get VM status: ${error.message}`, { error: error.message }, true);
     }
   }
 
-  async executeVMCommand(node, vmid, command, type = 'qemu') {
+  async executeVMCommand(node, vmid, command, type = 'qemu', wait = true) {
     if (!this.allowElevated) {
       return {
         content: [{
@@ -1492,21 +1926,84 @@ export class ProxmoxServer {
         command: commandArgv
       });
 
-      let output = `💻 **Command executed on VM ${safeVMID}**\n\n`;
-      output += `**Command**: \`${safeCommand}\`\n`;
-      output += `**Result**: Command submitted to guest agent\n`;
-      output += `**PID**: ${result.pid || 'N/A'}\n\n`;
-      output += `*Note: Use guest agent exec-status to check command completion*`;
+      const pid = result && (result.pid ?? result.PID);
 
-      return {
-        content: [{ type: 'text', text: output }]
-      };
+      // Without a PID we cannot poll; return what we have.
+      if (wait === false || pid === undefined || pid === null) {
+        let output = `💻 **Command executed on VM ${safeVMID}**\n\n`;
+        output += `**Command**: \`${safeCommand}\`\n`;
+        output += `**Result**: Command submitted to guest agent\n`;
+        output += `**PID**: ${pid ?? 'N/A'}\n\n`;
+        output += `*Note: pass wait=true (default) to poll exec-status for stdout and exit code.*`;
+        return this.respond(output, {
+          node: safeNode, vmid: parseInt(safeVMID, 10), command: safeCommand,
+          pid: pid ?? null, exited: false,
+        });
+      }
+
+      // Poll the guest agent for completion, then report the real result.
+      // The command has already been launched (we have a PID), so a transient
+      // polling failure must NOT be reported as "command failed" — surface the
+      // PID so the caller can follow up.
+      const statusPath = `/nodes/${safeNode}/qemu/${safeVMID}/agent/exec-status?pid=${encodeURIComponent(String(pid))}`;
+      const maxMs = 30000;
+      const start = Date.now();
+      let execStatus;
+      try {
+        execStatus = await this.proxmoxRequest(statusPath);
+        // The `exited` field is a boolean in the API schema but historically
+        // serializes as 0/1 — accept both truthy forms.
+        while (execStatus && !execStatus.exited && (Date.now() - start) < maxMs) {
+          await this.sleep(1000);
+          execStatus = await this.proxmoxRequest(statusPath);
+        }
+      } catch (pollError) {
+        return this.respond(
+          `⚠️ **Command launched on VM ${safeVMID}, but reading its result failed**\n\n` +
+          `**Command**: \`${safeCommand}\`\n**PID**: ${pid}\n\n` +
+          `Error while polling exec-status: ${pollError.message}\n\n` +
+          `The command is running; query exec-status for PID ${pid} to retrieve the result.`,
+          { node: safeNode, vmid: parseInt(safeVMID, 10), command: safeCommand, pid, exited: false, pollError: pollError.message },
+          false
+        );
+      }
+      execStatus = execStatus || {};
+
+      const exited = !!execStatus.exited;
+      const exitcode = execStatus.exitcode ?? null;
+      const stdout = execStatus['out-data'] ?? '';
+      const stderr = execStatus['err-data'] ?? '';
+      // Only assert failure when we actually have a non-zero numeric exit code.
+      // A signaled process reports `signal` with no exitcode — flag that too.
+      const failed = exited && ((typeof exitcode === 'number' && exitcode !== 0) || (exitcode === null && execStatus.signal != null));
+      const icon = !exited ? '⏳' : (failed ? '❌' : '✅');
+
+      let output = `${icon} **Command on VM ${safeVMID}**\n\n`;
+      output += `**Command**: \`${safeCommand}\`\n`;
+      output += `**PID**: ${pid}\n`;
+      if (!exited) {
+        output += `**Status**: still running after ${maxMs / 1000}s (partial result)\n`;
+      } else if (exitcode !== null) {
+        output += `**Exit code**: ${exitcode}\n`;
+      } else if (execStatus.signal != null) {
+        output += `**Terminated by signal**: ${execStatus.signal}\n`;
+      }
+      if (stdout) output += `\n**stdout**:\n\`\`\`\n${stdout}\n\`\`\`\n`;
+      if (stderr) output += `\n**stderr**:\n\`\`\`\n${stderr}\n\`\`\`\n`;
+      if (!stdout && !stderr && exited) output += `\n_(no output)_\n`;
+
+      return this.respond(output, {
+        node: safeNode, vmid: parseInt(safeVMID, 10), command: safeCommand,
+        pid, exited, exitcode, stdout, stderr,
+        signal: execStatus.signal ?? null,
+      }, failed);
     } catch (error) {
       return {
         content: [{
           type: 'text',
           text: `❌ **Failed to execute command on VM ${vmid}**\n\nError: ${error.message}\n\n*Note: Make sure the VM has guest agent installed and running*`
-        }]
+        }],
+        isError: true
       };
     }
   }
@@ -1550,10 +2047,20 @@ export class ProxmoxServer {
         output += `   • Status: ${storage.enabled ? 'Enabled' : 'Disabled'}\n\n`;
       }
     }
-    
-    return {
-      content: [{ type: 'text', text: output }]
-    };
+
+    return this.respond(output, {
+      count: storages.length,
+      storages: storages.map(s => ({
+        storage: s.storage,
+        node: s.node,
+        type: s.type ?? null,
+        content: s.content ?? null,
+        enabled: !!s.enabled,
+        total: s.total ?? null,
+        used: s.used ?? null,
+        avail: s.avail ?? null,
+      })),
+    });
   }
 
   async getClusterStatus() {
@@ -1904,19 +2411,38 @@ export class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeType = this.validateGuestType(type, 'lxc');
 
-      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}`, 'DELETE');
+      // Safety rail: refuse to delete a guest that has the protection flag set,
+      // mirroring the Proxmox UI. The operator must clear `protection` first.
+      try {
+        const config = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}/config`);
+        if (config && (config.protection === 1 || config.protection === '1' || config.protection === true)) {
+          return this.respond(
+            `🛡️ **Deletion blocked — guest ${safeVMID} is protected**\n\n` +
+            `The \`protection\` flag is set on this ${safeType.toUpperCase()}. ` +
+            `Clear it in the Proxmox UI (Options → Protection) or via the API before deleting.`,
+            { error: 'protected', node: safeNode, vmid: parseInt(safeVMID, 10), type: safeType, protection: true },
+            true
+          );
+        }
+      } catch (configError) {
+        // If we cannot read the config (e.g. permissions), fall through and let
+        // the DELETE itself enforce whatever the API allows.
+      }
+
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}`, 'DELETE');
 
       let output = `🗑️  **VM/Container Deletion Started**\n\n`;
       output += `• **VM/Container ID**: ${safeVMID}\n`;
-      output += `• **Type**: ${type.toUpperCase()}\n`;
+      output += `• **Type**: ${safeType.toUpperCase()}\n`;
       output += `• **Node**: ${safeNode}\n`;
       output += `• **Task ID**: ${result || 'N/A'}\n\n`;
       output += `**Note**: Deletion may take a moment to complete.\n`;
 
-      return {
-        content: [{ type: 'text', text: output }]
-      };
+      return this.respond(output, {
+        node: safeNode, vmid: parseInt(safeVMID, 10), type: safeType, upid: this.extractUPID(result),
+      });
     } catch (error) {
       return {
         content: [{
@@ -3844,6 +4370,502 @@ export class ProxmoxServer {
           text: `❌ **Failed to generate Terraform configuration**\n\nError: ${error.message}`
         }]
       };
+    }
+  }
+
+  // Shared guard for operations that need elevated privileges.
+  requireElevated(actionLabel) {
+    if (this.allowElevated) {
+      return null;
+    }
+    return this.respond(
+      `⚠️  **${actionLabel} Requires Elevated Permissions**\n\n` +
+      `Set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file and make sure the API token has the ` +
+      `required privileges. Run \`proxmox_whoami\` to see exactly what this token can do.`,
+      { error: 'elevated_permissions_required', action: actionLabel, allowElevated: false },
+      true
+    );
+  }
+
+  async getTaskStatus(node, upid, wait = false, timeout = 60) {
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeUPID = this.validateUPID(upid);
+      const path = `/nodes/${safeNode}/tasks/${encodeURIComponent(safeUPID)}/status`;
+
+      let status = await this.proxmoxRequest(path);
+
+      if (wait && status && status.status === 'running') {
+        const maxMs = Math.min(Math.max(Number(timeout) || 60, 1), 600) * 1000;
+        const start = Date.now();
+        while (status && status.status === 'running' && (Date.now() - start) < maxMs) {
+          await this.sleep(2000);
+          status = await this.proxmoxRequest(path);
+        }
+      }
+
+      status = status || {};
+      const running = status.status === 'running';
+      const finished = status.status === 'stopped';
+      const success = finished && status.exitstatus === 'OK';
+      const icon = running ? '⏳' : success ? '✅' : finished ? '❌' : 'ℹ️';
+
+      let output = `${icon} **Task Status**\n\n`;
+      output += `• **UPID**: \`${safeUPID}\`\n`;
+      output += `• **Node**: ${safeNode}\n`;
+      output += `• **Type**: ${status.type || 'N/A'}\n`;
+      output += `• **State**: ${status.status || 'unknown'}\n`;
+      if (finished) {
+        output += `• **Exit status**: ${status.exitstatus || 'N/A'}\n`;
+      }
+      if (running && wait) {
+        output += `• **Note**: still running after waiting ${Math.min(Math.max(Number(timeout) || 60, 1), 600)}s\n`;
+      } else if (running) {
+        output += `• **Note**: task is still running; pass wait=true to block until it finishes\n`;
+      }
+
+      const structured = {
+        node: safeNode,
+        upid: safeUPID,
+        type: status.type ?? null,
+        status: status.status ?? null,
+        exitstatus: status.exitstatus ?? null,
+        finished,
+        running,
+        success,
+        pid: status.pid ?? null,
+        starttime: status.starttime ?? null,
+      };
+
+      return this.respond(output, structured, finished && !success);
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to get task status**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getVMConfig(node, vmid, type = 'qemu') {
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeVMID = this.validateVMID(vmid);
+      const safeType = this.validateGuestType(type, 'qemu');
+
+      const config = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}/config`) || {};
+      const typeIcon = safeType === 'qemu' ? '🖥️' : '📦';
+
+      let output = `${typeIcon} **Configuration — ${config.name || config.hostname || `guest ${safeVMID}`}** (ID: ${safeVMID}, ${safeType.toUpperCase()} on ${safeNode})\n\n`;
+      const keys = Object.keys(config).filter(k => k !== 'digest').sort();
+      for (const key of keys) {
+        const value = config[key];
+        output += `• **${key}**: ${typeof value === 'object' ? JSON.stringify(value) : value}\n`;
+      }
+      if (keys.length === 0) {
+        output += '_No configuration returned._\n';
+      }
+
+      return this.respond(output, { node: safeNode, vmid: parseInt(safeVMID, 10), type: safeType, config });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to get guest config**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async whoami(path = undefined) {
+    try {
+      const endpoint = path
+        ? `/access/permissions?path=${encodeURIComponent(path)}`
+        : '/access/permissions';
+      const permissions = await this.proxmoxRequest(endpoint) || {};
+
+      let output = `🔑 **Proxmox API Identity**\n\n`;
+      output += `• **User**: ${this.proxmoxUser}\n`;
+      output += `• **Token**: ${this.proxmoxTokenName}\n`;
+      output += `• **Elevated tools enabled**: ${this.allowElevated ? 'yes (PROXMOX_ALLOW_ELEVATED=true)' : 'no'}\n`;
+      output += `• **TLS verification**: ${this.verifyTls ? 'on' : 'off'}\n\n`;
+
+      const paths = Object.keys(permissions).sort();
+      if (paths.length === 0) {
+        output += '_No permissions returned. The token may have no ACLs assigned._\n';
+      } else {
+        output += `**Effective permissions** (${paths.length} path${paths.length === 1 ? '' : 's'}):\n\n`;
+        for (const p of paths) {
+          const privs = Object.keys(permissions[p] || {})
+            .filter(priv => permissions[p][priv])
+            .sort();
+          output += `• \`${p}\`: ${privs.length ? privs.join(', ') : '(none)'}\n`;
+        }
+      }
+
+      return this.respond(output, {
+        user: this.proxmoxUser,
+        token: this.proxmoxTokenName,
+        allowElevated: this.allowElevated,
+        verifyTls: this.verifyTls,
+        permissions,
+      });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to read permissions**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async migrateGuest(node, vmid, target, type = 'qemu', online = false, wait = false) {
+    const guard = this.requireElevated('Migration');
+    if (guard) return guard;
+
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeVMID = this.validateVMID(vmid);
+      const safeTarget = this.validateNodeName(target);
+      const safeType = this.validateGuestType(type, 'qemu');
+
+      if (safeTarget === safeNode) {
+        return this.respond(
+          `❌ Source and target node are the same (${safeNode}). Nothing to migrate.`,
+          { error: 'same_node' },
+          true
+        );
+      }
+
+      const body = { target: safeTarget };
+      if (safeType === 'qemu') {
+        if (online) body.online = 1;
+      } else {
+        // LXC cannot live-migrate; "online" maps to restart migration.
+        if (online) body.restart = 1;
+      }
+
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}/migrate`, 'POST', body);
+      const upid = this.extractUPID(result);
+
+      let output = `🚚 **Migration started** — ${safeType.toUpperCase()} ${safeVMID}: ${safeNode} → ${safeTarget}\n\n`;
+      output += `• **Mode**: ${online ? (safeType === 'qemu' ? 'online (live)' : 'restart') : 'offline'}\n`;
+      output += `• **Task**: ${upid || 'N/A'}\n`;
+
+      let taskStructured = null;
+      if (wait && upid) {
+        const taskResult = await this.getTaskStatus(safeNode, upid, true);
+        taskStructured = taskResult.structuredContent || null;
+        output += `\n${taskResult.content[0].text}`;
+      } else if (upid) {
+        output += `\n_Use \`proxmox_get_task_status\` with this UPID to confirm completion._`;
+      }
+
+      // When we waited on the task, a failed task must surface as an error at
+      // the top level, not only in the nested task payload.
+      const taskFailed = taskStructured ? taskStructured.finished === true && taskStructured.success === false : false;
+
+      return this.respond(output, {
+        node: safeNode,
+        target: safeTarget,
+        vmid: parseInt(safeVMID, 10),
+        type: safeType,
+        online: !!online,
+        upid: upid || null,
+        task: taskStructured,
+      }, taskFailed);
+    } catch (error) {
+      return this.respond(
+        `❌ **Migration failed**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getGuestIPs(node, vmid) {
+    const guard = this.requireElevated('Guest IP discovery');
+    if (guard) return guard;
+
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeVMID = this.validateVMID(vmid);
+
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/agent/network-get-interfaces`);
+      const interfaces = (result && result.result) || [];
+
+      let output = `🌐 **Network interfaces — VM ${safeVMID} on ${safeNode}**\n\n`;
+      const structuredIfaces = [];
+      if (interfaces.length === 0) {
+        output += '_No interfaces reported by the guest agent._\n';
+      } else {
+        for (const iface of interfaces) {
+          const mac = iface['hardware-address'] || 'N/A';
+          const addrs = (iface['ip-addresses'] || []).map(a => ({
+            type: a['ip-address-type'],
+            address: a['ip-address'],
+            prefix: a.prefix,
+          }));
+          output += `• **${iface.name}** (${mac})\n`;
+          if (addrs.length === 0) {
+            output += `   • (no addresses)\n`;
+          }
+          for (const a of addrs) {
+            output += `   • ${a.type}: ${a.address}/${a.prefix}\n`;
+          }
+          structuredIfaces.push({ name: iface.name, mac, addresses: addrs });
+        }
+      }
+
+      return this.respond(output, { node: safeNode, vmid: parseInt(safeVMID, 10), interfaces: structuredIfaces });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to get guest IPs**\n\nError: ${error.message}\n\n_The VM must be running with the QEMU guest agent installed and enabled._`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async convertToTemplate(node, vmid, type = 'qemu') {
+    const guard = this.requireElevated('Template conversion');
+    if (guard) return guard;
+
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeVMID = this.validateVMID(vmid);
+      const safeType = this.validateGuestType(type, 'qemu');
+
+      await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}/template`, 'POST', {});
+
+      const output = `📎 **Converted ${safeType.toUpperCase()} ${safeVMID} to a template** on ${safeNode}.\n\n` +
+        `This is irreversible. Use the clone tools to provision new guests from it.`;
+
+      return this.respond(output, { node: safeNode, vmid: parseInt(safeVMID, 10), type: safeType, template: true });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to convert to template**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async setCloudInit(args = {}) {
+    const guard = this.requireElevated('Cloud-init configuration');
+    if (guard) return guard;
+
+    try {
+      const safeNode = this.validateNodeName(args.node);
+      const safeVMID = this.validateVMID(args.vmid);
+
+      const body = {};
+      const applied = [];
+      for (const key of ['ciuser', 'cipassword', 'sshkeys', 'ipconfig0', 'nameserver', 'searchdomain']) {
+        if (args[key] !== undefined && args[key] !== null && args[key] !== '') {
+          body[key] = key === 'sshkeys' ? encodeURIComponent(args[key]) : args[key];
+          applied.push(key);
+        }
+      }
+
+      if (applied.length === 0) {
+        return this.respond(
+          `❌ No cloud-init fields supplied. Provide at least one of: ciuser, cipassword, sshkeys, ipconfig0, nameserver, searchdomain.`,
+          { error: 'no_fields' },
+          true
+        );
+      }
+
+      await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/config`, 'PUT', body);
+
+      let output = `☁️ **Cloud-init updated — VM ${safeVMID} on ${safeNode}**\n\n`;
+      output += `Fields set: ${applied.join(', ')}\n\n`;
+      output += `_The VM must have a cloud-init drive; changes apply on next reboot._`;
+
+      // Don't echo the password back in structured output.
+      const safeApplied = applied.filter(k => k !== 'cipassword');
+      return this.respond(output, {
+        node: safeNode,
+        vmid: parseInt(safeVMID, 10),
+        applied,
+        values: Object.fromEntries(safeApplied.map(k => [k, k === 'sshkeys' ? '(set)' : args[k]])),
+      });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to set cloud-init options**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getRRDData(node, vmid = null, type = 'qemu', timeframe = 'day') {
+    try {
+      const safeNode = this.validateNodeName(node);
+      const safeTimeframe = ['hour', 'day', 'week', 'month', 'year'].includes(timeframe) ? timeframe : 'day';
+
+      let endpoint;
+      let label;
+      if (vmid) {
+        const safeVMID = this.validateVMID(vmid);
+        const safeType = this.validateGuestType(type, 'qemu');
+        endpoint = `/nodes/${safeNode}/${safeType}/${safeVMID}/rrddata?timeframe=${safeTimeframe}`;
+        label = `${safeType.toUpperCase()} ${safeVMID}`;
+      } else {
+        endpoint = `/nodes/${safeNode}/rrddata?timeframe=${safeTimeframe}`;
+        label = `node ${safeNode}`;
+      }
+
+      const data = (await this.proxmoxRequest(endpoint)) || [];
+      const points = data.filter(p => p && typeof p === 'object');
+
+      const avg = (...fields) => {
+        for (const field of fields) {
+          const vals = points.map(p => p[field]).filter(v => typeof v === 'number');
+          if (vals.length) return vals.reduce((a, b) => a + b, 0) / vals.length;
+        }
+        return null;
+      };
+      // The trailing RRD bucket is frequently empty/partial, so "latest" is the
+      // last point that actually carries a cpu sample.
+      const latestCpuPoint = [...points].reverse().find(p => typeof p.cpu === 'number');
+      // Memory total differs by scope: guests report `maxmem`, nodes `memtotal`.
+      const memMax = avg('maxmem', 'memtotal');
+
+      let output = `📈 **Historical metrics — ${label}** (timeframe: ${safeTimeframe}, ${points.length} data points)\n\n`;
+      if (points.length === 0) {
+        output += '_No data returned._\n';
+      } else {
+        const cpuAvg = avg('cpu');
+        if (cpuAvg !== null) output += `• **CPU (avg)**: ${(cpuAvg * 100).toFixed(1)}%\n`;
+        if (latestCpuPoint) output += `• **CPU (latest)**: ${(latestCpuPoint.cpu * 100).toFixed(1)}%\n`;
+        const memAvg = avg('mem', 'memused');
+        if (memAvg !== null) output += `• **Memory (avg)**: ${this.formatBytes(memAvg)}\n`;
+        if (memMax !== null) output += `• **Memory (total)**: ${this.formatBytes(memMax)}\n`;
+        const netin = avg('netin');
+        const netout = avg('netout');
+        if (netin !== null) output += `• **Net in (avg)**: ${this.formatBytes(netin)}/s\n`;
+        if (netout !== null) output += `• **Net out (avg)**: ${this.formatBytes(netout)}/s\n`;
+      }
+
+      return this.respond(output, {
+        node: safeNode,
+        vmid: vmid ? parseInt(vmid, 10) : null,
+        timeframe: safeTimeframe,
+        count: points.length,
+        data: points,
+      });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to get historical metrics**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getPools(poolid = undefined) {
+    try {
+      if (poolid) {
+        if (!/^[A-Za-z0-9._-]+$/.test(poolid) || poolid.length > 64) {
+          throw new Error('Invalid pool id format');
+        }
+        const pool = await this.proxmoxRequest(`/pools/${encodeURIComponent(poolid)}`) || {};
+        const members = pool.members || [];
+        let output = `🗂️ **Pool ${poolid}**${pool.comment ? ` — ${pool.comment}` : ''}\n\n`;
+        if (members.length === 0) {
+          output += '_No members._\n';
+        } else {
+          for (const m of members) {
+            output += `• ${m.type}${m.vmid ? ` ${m.vmid}` : ''}${m.storage ? ` ${m.storage}` : ''} — ${m.node || ''} ${m.status || ''}\n`;
+          }
+        }
+        return this.respond(output, { poolid, comment: pool.comment ?? null, members });
+      }
+
+      const pools = await this.proxmoxRequest('/pools') || [];
+      let output = `🗂️ **Resource Pools** (${pools.length})\n\n`;
+      if (pools.length === 0) {
+        output += '_No pools defined._\n';
+      } else {
+        for (const p of pools) {
+          output += `• **${p.poolid}**${p.comment ? ` — ${p.comment}` : ''}\n`;
+        }
+      }
+      return this.respond(output, { count: pools.length, pools });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to list pools**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getHAResources() {
+    try {
+      const resources = await this.proxmoxRequest('/cluster/ha/resources') || [];
+      let output = `🛟 **HA Resources** (${resources.length})\n\n`;
+      if (resources.length === 0) {
+        output += '_No HA resources configured._\n';
+      } else {
+        for (const r of resources) {
+          output += `• **${r.sid}** — state: ${r.state || 'N/A'}, group: ${r.group || 'none'}, max_restart: ${r.max_restart ?? 'N/A'}\n`;
+        }
+      }
+      return this.respond(output, { count: resources.length, resources });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to list HA resources**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
+    }
+  }
+
+  async getFirewallRules(level = 'cluster', node = undefined, vmid = undefined, type = 'qemu') {
+    try {
+      let endpoint;
+      let label;
+      if (level === 'node') {
+        const safeNode = this.validateNodeName(node);
+        endpoint = `/nodes/${safeNode}/firewall/rules`;
+        label = `node ${safeNode}`;
+      } else if (level === 'guest') {
+        const safeNode = this.validateNodeName(node);
+        const safeVMID = this.validateVMID(vmid);
+        const safeType = this.validateGuestType(type, 'qemu');
+        endpoint = `/nodes/${safeNode}/${safeType}/${safeVMID}/firewall/rules`;
+        label = `${safeType.toUpperCase()} ${safeVMID} on ${safeNode}`;
+      } else {
+        endpoint = '/cluster/firewall/rules';
+        label = 'cluster';
+      }
+
+      const rules = await this.proxmoxRequest(endpoint) || [];
+      let output = `🧱 **Firewall rules — ${label}** (${rules.length})\n\n`;
+      if (rules.length === 0) {
+        output += '_No rules defined._\n';
+      } else {
+        for (const r of rules) {
+          const parts = [
+            r.type,
+            r.action,
+            r.proto ? `proto ${r.proto}` : null,
+            r.source ? `src ${r.source}` : null,
+            r.dest ? `dst ${r.dest}` : null,
+            r.dport ? `dport ${r.dport}` : null,
+            r.enable === 0 ? '(disabled)' : null,
+          ].filter(Boolean);
+          output += `• #${r.pos}: ${parts.join(' ')}${r.comment ? ` — ${r.comment}` : ''}\n`;
+        }
+      }
+      return this.respond(output, { level, count: rules.length, rules });
+    } catch (error) {
+      return this.respond(
+        `❌ **Failed to list firewall rules**\n\nError: ${error.message}`,
+        { error: error.message },
+        true
+      );
     }
   }
 

@@ -9,25 +9,49 @@ Based on the original Python implementation by [canvrno/ProxmoxMCP](https://gith
 ## Features
 
 - Two permission levels: read-only by default; destructive operations require an explicit opt-in (`PROXMOX_ALLOW_ELEVATED=true`)
-- Node, VM, and container management: status, lifecycle (start/stop/reboot/shutdown/pause), create, clone, resize, delete
+- Node, VM, and container management: status, lifecycle (start/stop/reboot/shutdown/pause), create, clone, resize, delete, migrate, convert-to-template
+- Task tracking: read (and optionally wait on) any task by UPID so mutating operations can confirm they actually finished
+- Guest agent integration: run commands and read their stdout/exit code, and discover a running VM's real IP addresses
 - Snapshots and backups: create, list, rollback, delete
 - Disk and network configuration: add, resize, move, and remove disks, mount points, and network interfaces
+- Cloud-init, historical metrics (RRD), and read-only observability of pools, HA resources, and firewall rules
 - Terraform/OpenTofu export: generate HCL (with `import` blocks) from existing VMs and containers to adopt them into IaC without recreation
-- Markdown-formatted output built on the official MCP SDK
+- Structured output: tools return machine-readable `structuredContent` alongside the Markdown text, so agents can chain on the data
+- MCP Resources (`proxmox://nodes`, `proxmox://vms`, `proxmox://storage`) and Prompts (provisioning, health check, permission diagnosis)
+- Safety rails: optional TLS verification, node/VMID allowlists, and a protection-flag check that blocks deleting protected guests
+- Built on the official MCP SDK
 
 ## Installation
 
 ### Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 20+ and npm
 - A Proxmox VE server and an API token (see [API Token Setup](#proxmox-api-token-setup))
 
 ### Setup
+
+Clone and install:
 
 ```bash
 git clone https://github.com/gilby125/mcp-proxmox.git
 cd mcp-proxmox
 npm install
+```
+
+Or run without cloning via `npx`:
+
+```bash
+PROXMOX_HOST=your-proxmox-ip PROXMOX_TOKEN_VALUE=your-token-secret npx mcp-proxmox
+```
+
+Or with Docker (MCP speaks over stdio, so run attached with `-i`):
+
+```bash
+docker build -t mcp-proxmox .
+docker run -i --rm \
+  -e PROXMOX_HOST=your-proxmox-ip \
+  -e PROXMOX_TOKEN_VALUE=your-token-secret \
+  mcp-proxmox
 ```
 
 ## Configuration
@@ -42,6 +66,9 @@ The server is configured entirely through environment variables:
 | `PROXMOX_TOKEN_NAME` | no | `mcpserver` | API token ID |
 | `PROXMOX_PORT` | no | `8006` | Proxmox API port |
 | `PROXMOX_ALLOW_ELEVATED` | no | `false` | Set `true` to enable write/destructive tools |
+| `PROXMOX_VERIFY_TLS` | no | `false` | Set `true` to verify the Proxmox TLS certificate (use with a CA-signed cert) |
+| `PROXMOX_NODE_ALLOWLIST` | no | — | Comma-separated node names the server may touch; empty means no restriction |
+| `PROXMOX_VMID_ALLOWLIST` | no | — | Comma-separated VMIDs the server may touch; empty means no restriction |
 
 There are two ways to provide them:
 
@@ -118,6 +145,13 @@ Elevated mode (`PROXMOX_ALLOW_ELEVATED=true`) additionally enables the write too
 | `proxmox_get_cluster_status` | Cluster health overview |
 | `proxmox_list_templates` | List LXC templates on a storage |
 | `proxmox_get_next_vmid` | Next free VM/container ID |
+| `proxmox_get_vm_config` | Full configuration of a VM/container (cores, memory, disks, network, cloud-init) |
+| `proxmox_get_task_status` | Status of a task by UPID; optionally wait until it finishes |
+| `proxmox_whoami` | Identity the token authenticates as and its effective permissions |
+| `proxmox_get_rrd_data` | Historical CPU/memory/disk/network time series (node or guest) |
+| `proxmox_get_pools` | Resource pools and their members |
+| `proxmox_get_ha_resources` | High-availability resources and desired state |
+| `proxmox_get_firewall_rules` | Firewall rules at cluster / node / guest level |
 | `proxmox_generate_terraform` | Generate Terraform/OpenTofu HCL from existing guests |
 
 ### Elevated (require `PROXMOX_ALLOW_ELEVATED=true`)
@@ -131,9 +165,13 @@ Elevated mode (`PROXMOX_ALLOW_ELEVATED=true`) additionally enables the write too
 | Backups | `proxmox_create_backup_*`, `proxmox_list_backups`, `proxmox_restore_backup_*`, `proxmox_delete_backup` |
 | Disks | `proxmox_add_disk_vm`, `proxmox_add_mountpoint_lxc`, `proxmox_resize_disk_*`, `proxmox_remove_disk_vm`, `proxmox_remove_mountpoint_lxc`, `proxmox_move_disk_*` |
 | Network | `proxmox_add_network_*`, `proxmox_update_network_*`, `proxmox_remove_network_*` |
-| Guest exec | `proxmox_execute_vm_command` (QEMU via guest agent) |
+| Migrate / template | `proxmox_migrate_vm`, `proxmox_convert_to_template` |
+| Cloud-init | `proxmox_set_cloudinit` (QEMU) |
+| Guest exec / IPs | `proxmox_execute_vm_command`, `proxmox_get_guest_ips` (QEMU via guest agent) |
 
 Tools with a `_*` suffix exist in `_vm` (QEMU) and `_lxc` (container) variants.
+
+`proxmox_execute_vm_command` polls the guest agent by default (`wait: true`) and returns the command's stdout, stderr, and exit code; pass `wait: false` to return only the PID. `proxmox_migrate_vm` and other long-running operations return a task UPID — feed it to `proxmox_get_task_status` (with `wait: true`) to confirm completion.
 
 ### Terraform/OpenTofu export
 
@@ -156,6 +194,14 @@ terraform plan   # import blocks adopt the existing guests
 ```
 
 Options the generator cannot map are listed in comments inside each resource block. LXC resources include an `ignore_changes = [operating_system]` lifecycle block because Proxmox does not record the source template, so the placeholder `template_file_id` must not force replacement of an adopted container.
+
+## Resources and Prompts
+
+Beyond tools, the server exposes MCP **Resources** for browsable, read-only cluster state as JSON — `proxmox://nodes`, `proxmox://vms`, and `proxmox://storage` — and MCP **Prompts** for common workflows: `provision_lxc`, `health_check`, and `diagnose_permissions`.
+
+## Structured output
+
+Every tool returns a Markdown summary for humans plus a `structuredContent` object for programmatic use. For example, `proxmox_get_vms` returns `{ count, vms: [{ vmid, name, type, node, status, cpu, mem, maxmem, ... }] }`. Clients that don't understand `structuredContent` simply render the text.
 
 ## Testing
 
@@ -184,12 +230,12 @@ npm test         # unit tests
 echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node index.js
 ```
 
-The repository also contains an unmaintained Python implementation under `src/` inherited from the upstream project; the active server is `index.js`.
+Continuous integration runs `npm test` on Node 20 and 22 via GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Known Limitations
 
-- TLS verification is disabled for the Proxmox API connection (self-signed certificates are accepted). Do not point this at untrusted networks.
-- `proxmox_execute_vm_command` works for QEMU VMs (via the guest agent) only. The Proxmox HTTP API has no exec endpoint for LXC containers, so the tool returns a clear "not supported" message for `type: lxc` — use SSH or `pct exec` on the host instead.
+- TLS verification defaults to off so the server works with Proxmox's self-signed certificate out of the box. Set `PROXMOX_VERIFY_TLS=true` when you have a CA-signed certificate. Do not point the server at untrusted networks with verification disabled.
+- `proxmox_execute_vm_command`, `proxmox_get_guest_ips`, and `proxmox_set_cloudinit` work for QEMU VMs only. The Proxmox HTTP API has no exec/agent endpoint for LXC containers, so command execution returns a clear "not supported" message for `type: lxc` — use SSH or `pct exec` on the host instead.
 
 ## Troubleshooting
 
