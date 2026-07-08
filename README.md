@@ -15,8 +15,6 @@ Based on the original Python implementation by [canvrno/ProxmoxMCP](https://gith
 - Terraform/OpenTofu export: generate HCL (with `import` blocks) from existing VMs and containers to adopt them into IaC without recreation
 - Markdown-formatted output built on the official MCP SDK
 
-https://github.com/user-attachments/assets/1b5f42f7-85d5-4918-aca4-d38413b0e82b
-
 ## Installation
 
 ### Prerequisites
