@@ -97,6 +97,14 @@ export class ProxmoxServer {
     return id.toString();
   }
 
+  validateGuestType(type, fallback = 'qemu') {
+    const value = type === undefined || type === null ? fallback : type;
+    if (value !== 'qemu' && value !== 'lxc') {
+      throw new Error("Invalid guest type. Must be 'qemu' or 'lxc'");
+    }
+    return value;
+  }
+
   validateStorageName(storage) {
     if (!storage || typeof storage !== 'string') {
       throw new Error('Storage name is required and must be a string');
@@ -1075,6 +1083,19 @@ export class ProxmoxServer {
             },
             required: ['node', 'vmid', 'net']
           }
+        },
+        {
+          name: 'proxmox_generate_terraform',
+          description: 'Generate Terraform/OpenTofu HCL (bpg/proxmox provider) from existing VMs and containers, including import blocks to adopt them without recreation',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Optional: only export guests on this node' },
+              vmid: { type: 'string', description: 'Optional: only export this VM/container ID' },
+              type: { type: 'string', enum: ['qemu', 'lxc', 'all'], description: 'Guest type filter', default: 'all' },
+              include_provider: { type: 'boolean', description: 'Include terraform/provider scaffolding block (default: true)', default: true }
+            }
+          }
         }
       ]
     }));
@@ -1249,6 +1270,9 @@ export class ProxmoxServer {
           case 'proxmox_remove_network_lxc':
             return await this.removeNetworkLXC(args.node, args.vmid, args.net);
 
+          case 'proxmox_generate_terraform':
+            return await this.generateTerraform(args.node, args.vmid, args.type, args.include_provider);
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -1395,16 +1419,17 @@ export class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeType = this.validateGuestType(type, 'qemu');
 
-      const vmStatus = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/status/current`);
+      const vmStatus = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}/${safeVMID}/status/current`);
 
       const status = vmStatus.status === 'running' ? '🟢' : vmStatus.status === 'stopped' ? '🔴' : '🟡';
-      const typeIcon = type === 'qemu' ? '🖥️' : '📦';
+      const typeIcon = safeType === 'qemu' ? '🖥️' : '📦';
 
       let output = `${status} ${typeIcon} **${vmStatus.name || `VM-${safeVMID}`}** (ID: ${safeVMID})\n\n`;
       output += `• **Node**: ${safeNode}\n`;
     output += `• **Status**: ${vmStatus.status}\n`;
-    output += `• **Type**: ${type.toUpperCase()}\n`;
+    output += `• **Type**: ${safeType.toUpperCase()}\n`;
     
     if (vmStatus.status === 'running') {
       output += `• **Uptime**: ${vmStatus.uptime ? this.formatUptime(vmStatus.uptime) : 'N/A'}\n`;
@@ -1442,37 +1467,40 @@ export class ProxmoxServer {
       // Validate inputs to prevent injection attacks
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
-      const safeCommand = this.validateCommand(command);
+      const safeType = this.validateGuestType(type, 'qemu');
 
-      // For QEMU VMs, we need to use the guest agent
-      if (type === 'qemu') {
-        const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/agent/exec`, 'POST', {
-          command: safeCommand
-        });
-
-        let output = `💻 **Command executed on VM ${safeVMID}**\n\n`;
-        output += `**Command**: \`${safeCommand}\`\n`;
-        output += `**Result**: Command submitted to guest agent\n`;
-        output += `**PID**: ${result.pid || 'N/A'}\n\n`;
-        output += `*Note: Use guest agent status to check command completion*`;
-
+      // The Proxmox HTTP API has no exec endpoint for LXC containers; commands
+      // can only be run via the QEMU guest agent. Fail clearly instead of
+      // POSTing to a path that does not exist.
+      if (safeType !== 'qemu') {
         return {
-          content: [{ type: 'text', text: output }]
-        };
-      } else {
-        // For LXC containers, we can execute directly
-        const result = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/exec`, 'POST', {
-          command: safeCommand
-        });
-
-        let output = `📦 **Command executed on LXC ${safeVMID}**\n\n`;
-        output += `**Command**: \`${safeCommand}\`\n`;
-        output += `**Output**:\n\`\`\`\n${result || 'Command executed successfully'}\n\`\`\``;
-
-        return {
-          content: [{ type: 'text', text: output }]
+          content: [{
+            type: 'text',
+            text: `⚠️  **Command execution is not supported for LXC containers**\n\nThe Proxmox API only exposes command execution for QEMU VMs (via the guest agent). There is no equivalent HTTP endpoint for containers.\n\n**Alternatives**: run the command over SSH, or use \`pct exec ${safeVMID} -- <command>\` on the Proxmox host.`
+          }]
         };
       }
+
+      const safeCommand = this.validateCommand(command);
+
+      // The guest agent expects the command as a list of program + arguments,
+      // not a single string. validateCommand already rejects shell
+      // metacharacters, so a whitespace split yields a safe argv.
+      const commandArgv = safeCommand.trim().split(/\s+/);
+
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/agent/exec`, 'POST', {
+        command: commandArgv
+      });
+
+      let output = `💻 **Command executed on VM ${safeVMID}**\n\n`;
+      output += `**Command**: \`${safeCommand}\`\n`;
+      output += `**Result**: Command submitted to guest agent\n`;
+      output += `**PID**: ${result.pid || 'N/A'}\n\n`;
+      output += `*Note: Use guest agent exec-status to check command completion*`;
+
+      return {
+        content: [{ type: 'text', text: output }]
+      };
     } catch (error) {
       return {
         content: [{
@@ -1504,18 +1532,10 @@ export class ProxmoxServer {
     if (storages.length === 0) {
       output += 'No storage found.\n';
     } else {
-      const uniqueStorages = [];
-      const seen = new Set();
-      
-      for (const storage of storages) {
-        const key = `${storage.storage}-${storage.node}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          uniqueStorages.push(storage);
-        }
-      }
-      
-      for (const storage of uniqueStorages.sort((a, b) => a.storage.localeCompare(b.storage))) {
+      // Each row is a distinct storage/node pairing; the API does not return
+      // duplicates, so we list every pairing (shared storage appears once per
+      // node, which is intentional — usage is reported per node).
+      for (const storage of storages.sort((a, b) => a.storage.localeCompare(b.storage))) {
         const enabled = storage.enabled ? '🟢' : '🔴';
         const usagePercent = storage.total && storage.used ? 
           ((storage.used / storage.total) * 100).toFixed(1) : 'N/A';
@@ -1735,8 +1755,13 @@ export class ProxmoxServer {
       // Format: storage:size (size in GB, no suffix)
       const storage = args.storage || 'local-lvm';
       const diskSize = args.disk_size || '8G';
-      // Extract numeric value from disk size (e.g., "8G" -> "8")
-      const sizeValue = diskSize.replace(/[^0-9]/g, '');
+      // Extract the leading number, preserving decimals (e.g. "8G" -> "8",
+      // "1.5G" -> "1.5"). A blind digit-strip would turn "1.5G" into "15".
+      const sizeMatch = String(diskSize).match(/^(\d+(?:\.\d+)?)/);
+      if (!sizeMatch) {
+        throw new Error(`Invalid disk size "${diskSize}". Expected a number optionally followed by a unit (e.g. "8G").`);
+      }
+      const sizeValue = sizeMatch[1];
       body.scsi0 = `${storage}:${sizeValue}`;
 
       // Add ISO if provided
@@ -2463,22 +2488,29 @@ export class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
+      const safeType = this.validateGuestType(type, 'lxc');
 
-      const body = {
-        vmid: safeVMID,
-        archive: archive,
-        restore: 1
-      };
+      // The two create endpoints take the backup differently:
+      //   QEMU: POST /nodes/{node}/qemu  with { archive } (no "restore" key)
+      //   LXC:  POST /nodes/{node}/lxc   with { ostemplate: <archive>, restore: 1 }
+      // Sending the wrong shape makes Proxmox reject the unknown parameter.
+      const body = { vmid: safeVMID };
+      if (safeType === 'qemu') {
+        body.archive = archive;
+      } else {
+        body.ostemplate = archive;
+        body.restore = 1;
+      }
 
       if (storage) {
         body.storage = this.validateStorageName(storage);
       }
 
-      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}`, 'POST', body);
+      const result = await this.proxmoxRequest(`/nodes/${safeNode}/${safeType}`, 'POST', body);
 
       let output = `♻️  **Backup Restore Started**\n\n`;
       output += `• **New VM ID**: ${safeVMID}\n`;
-      output += `• **Type**: ${type.toUpperCase()}\n`;
+      output += `• **Type**: ${safeType.toUpperCase()}\n`;
       output += `• **Node**: ${safeNode}\n`;
       output += `• **Archive**: ${archive}\n`;
       if (storage) {
@@ -3084,14 +3116,17 @@ export class ProxmoxServer {
       });
 
       // Update only provided parameters
+      const models = ['virtio', 'e1000', 'e1000e', 'rtl8139', 'vmxnet3'];
       if (model !== undefined) {
-        // Extract MAC if present, remove old model
-        const mac = configParts.macaddr || configParts[Object.keys(configParts).find(k => k.match(/^[0-9A-F]{2}:/i))];
+        // In QEMU NIC config the MAC is stored as the VALUE of the model key,
+        // e.g. "virtio=AA:BB:CC:DD:EE:FF". Recover it from the existing model
+        // key so switching models preserves the MAC instead of dropping it
+        // (which would make Proxmox assign a new random MAC).
+        const existingModel = models.find(m => configParts[m] !== undefined);
+        const mac = configParts.macaddr || (existingModel ? configParts[existingModel] : undefined);
+        // Remove all model keys, then set the new one (carrying the MAC over).
+        models.forEach(m => { delete configParts[m]; });
         configParts[model] = mac || '';
-        // Remove old model keys
-        ['virtio', 'e1000', 'rtl8139', 'vmxnet3'].forEach(m => {
-          if (m !== model) delete configParts[m];
-        });
       }
 
       if (bridge !== undefined) {
@@ -3325,6 +3360,488 @@ export class ProxmoxServer {
         content: [{
           type: 'text',
           text: `❌ **Failed to remove LXC network interface**\n\nError: ${error.message}\n\n**Common issues**:\n- Network interface doesn't exist\n- Container is locked or in use\n- Invalid interface name`
+        }]
+      };
+    }
+  }
+
+  // --- Terraform / OpenTofu generation -------------------------------------
+
+  // Parse a Proxmox property string like "virtio=AA:BB,bridge=vmbr0,firewall=1"
+  // or "local-lvm:vm-100-disk-0,size=32G,ssd=1" into { leading, options }.
+  parsePropertyString(value) {
+    const options = {};
+    let leading = null;
+    for (const part of String(value).split(',')) {
+      const idx = part.indexOf('=');
+      if (idx === -1) {
+        if (leading === null) leading = part;
+      } else {
+        options[part.slice(0, idx)] = part.slice(idx + 1);
+      }
+    }
+    return { leading, options };
+  }
+
+  hclString(value) {
+    return `"${String(value)
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\$\{/g, () => '$${')
+      .replace(/\n/g, '\\n')}"`;
+  }
+
+  hclLabel(name, fallback) {
+    const label = String(name || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    return label || fallback;
+  }
+
+  // Convert a Proxmox size string ("32G", "8", "512M", "1T") to whole gigabytes.
+  sizeToGB(size) {
+    const match = String(size).match(/^(\d+(?:\.\d+)?)([KMGT])?$/i);
+    if (!match) return null;
+    const value = parseFloat(match[1]);
+    const unit = (match[2] || 'G').toUpperCase();
+    const gb = { K: value / (1024 * 1024), M: value / 1024, G: value, T: value * 1024 }[unit];
+    return Math.max(1, Math.ceil(gb));
+  }
+
+  terraformProviderBlock() {
+    return [
+      'terraform {',
+      '  required_providers {',
+      '    proxmox = {',
+      '      source  = "bpg/proxmox"',
+      '      version = ">= 0.60.0"',
+      '    }',
+      '  }',
+      '}',
+      '',
+      'provider "proxmox" {',
+      `  endpoint  = ${this.hclString(`https://${this.proxmoxHost}:${this.proxmoxPort}/`)}`,
+      '  api_token = var.proxmox_api_token # format: user@realm!tokenid=uuid',
+      '  insecure  = true # set to false if your API certificate is trusted',
+      '}',
+      '',
+      'variable "proxmox_api_token" {',
+      '  type      = string',
+      '  sensitive = true',
+      '}',
+    ].join('\n');
+  }
+
+  terraformForQemu(node, vmid, config) {
+    const consumed = new Set(['digest', 'vmgenid', 'meta', 'smbios1', 'pending']);
+    const take = (key) => { consumed.add(key); return config[key]; };
+
+    const label = `vm_${vmid}_${this.hclLabel(config.name, 'unnamed')}`;
+    const lines = [`resource "proxmox_virtual_environment_vm" "${label}" {`];
+    const push = (line) => lines.push(line ? `  ${line}` : '');
+
+    if (take('name') !== undefined) push(`name        = ${this.hclString(config.name)}`);
+    push(`node_name   = ${this.hclString(node)}`);
+    push(`vm_id       = ${vmid}`);
+    if (take('description') !== undefined) push(`description = ${this.hclString(config.description)}`);
+    if (take('tags') !== undefined) {
+      const tags = String(config.tags).split(/[;,]/).filter(Boolean);
+      push(`tags        = [${tags.map(t => this.hclString(t)).join(', ')}]`);
+    }
+    push(`on_boot     = ${take('onboot') ? 'true' : 'false'}`);
+    if (take('bios') !== undefined) push(`bios        = ${this.hclString(config.bios)}`);
+    if (take('machine') !== undefined) push(`machine     = ${this.hclString(config.machine)}`);
+    if (take('scsihw') !== undefined) push(`scsi_hardware = ${this.hclString(config.scsihw)}`);
+    if (take('boot') !== undefined) {
+      const order = this.parsePropertyString(config.boot).options.order;
+      if (order) push(`boot_order  = [${order.split(';').map(d => this.hclString(d)).join(', ')}]`);
+    }
+
+    if (take('ostype') !== undefined) {
+      push('');
+      push('operating_system {');
+      push(`  type = ${this.hclString(config.ostype)}`);
+      push('}');
+    }
+
+    if (take('agent') !== undefined) {
+      const agent = this.parsePropertyString(config.agent);
+      push('');
+      push('agent {');
+      push(`  enabled = ${agent.leading === '1' || agent.options.enabled === '1' ? 'true' : 'false'}`);
+      push('}');
+    }
+
+    push('');
+    push('cpu {');
+    push(`  cores   = ${parseInt(take('cores'), 10) || 1}`);
+    push(`  sockets = ${parseInt(take('sockets'), 10) || 1}`);
+    if (take('cpu') !== undefined) {
+      const cpu = this.parsePropertyString(config.cpu);
+      const cpuType = cpu.options.cputype || cpu.leading;
+      if (cpuType) push(`  type    = ${this.hclString(cpuType)}`);
+    }
+    push('}');
+
+    push('');
+    push('memory {');
+    push(`  dedicated = ${parseInt(take('memory'), 10) || 512}`);
+    if (take('balloon') !== undefined) push(`  floating  = ${parseInt(config.balloon, 10) || 0}`);
+    push('}');
+
+    // Disks, CD-ROMs and the cloud-init drive all live on ide/sata/scsi/virtio keys
+    const cloudInit = { drive: null };
+    let cdromEmitted = false;
+    for (const key of Object.keys(config).sort()) {
+      const match = key.match(/^(ide|sata|scsi|virtio)(\d+)$/);
+      if (!match) continue;
+      const disk = this.parsePropertyString(config[key]);
+      consumed.add(key);
+
+      if ((disk.leading || '').includes('cloudinit')) {
+        cloudInit.drive = { key, datastore: disk.leading.split(':')[0] };
+        continue;
+      }
+      if (disk.options.media === 'cdrom') {
+        if (disk.leading && disk.leading !== 'none') {
+          // The bpg provider allows only one cdrom block per resource; emit the
+          // first and leave any extra ISOs as a comment for manual handling.
+          if (cdromEmitted) {
+            push('');
+            push(`# Additional CD-ROM not emitted (provider allows one cdrom block): ${key} = ${disk.leading}`);
+          } else {
+            push('');
+            push('cdrom {');
+            push(`  file_id   = ${this.hclString(disk.leading)}`);
+            push(`  interface = ${this.hclString(key)}`);
+            push('}');
+            cdromEmitted = true;
+          }
+        }
+        continue;
+      }
+
+      push('');
+      push('disk {');
+      push(`  interface    = ${this.hclString(key)}`);
+      if (disk.leading) push(`  datastore_id = ${this.hclString(disk.leading.split(':')[0])}`);
+      const sizeGB = disk.options.size ? this.sizeToGB(disk.options.size) : null;
+      if (sizeGB) push(`  size         = ${sizeGB}`);
+      if (disk.options.ssd === '1') push('  ssd          = true');
+      if (disk.options.iothread === '1') push('  iothread     = true');
+      if (disk.options.discard) push(`  discard      = ${this.hclString(disk.options.discard)}`);
+      if (disk.options.cache) push(`  cache        = ${this.hclString(disk.options.cache)}`);
+      push('}');
+    }
+
+    if (take('efidisk0') !== undefined) {
+      const efi = this.parsePropertyString(config.efidisk0);
+      push('');
+      push('efi_disk {');
+      if (efi.leading) push(`  datastore_id = ${this.hclString(efi.leading.split(':')[0])}`);
+      if (efi.options.efitype) push(`  type         = ${this.hclString(efi.options.efitype)}`);
+      push('}');
+    }
+
+    // Network devices
+    for (const key of Object.keys(config).sort()) {
+      const match = key.match(/^net(\d+)$/);
+      if (!match) continue;
+      const net = this.parsePropertyString(config[key]);
+      consumed.add(key);
+      const models = ['virtio', 'e1000', 'e1000e', 'rtl8139', 'vmxnet3'];
+      const model = models.find(m => net.options[m] !== undefined);
+      push('');
+      push('network_device {');
+      if (model) {
+        push(`  model       = ${this.hclString(model)}`);
+        if (net.options[model]) push(`  mac_address = ${this.hclString(net.options[model])}`);
+      }
+      if (net.options.macaddr) push(`  mac_address = ${this.hclString(net.options.macaddr)}`);
+      if (net.options.bridge) push(`  bridge      = ${this.hclString(net.options.bridge)}`);
+      if (net.options.tag) push(`  vlan_id     = ${parseInt(net.options.tag, 10)}`);
+      if (net.options.firewall === '1') push('  firewall    = true');
+      if (net.options.mtu) push(`  mtu         = ${parseInt(net.options.mtu, 10)}`);
+      if (net.options.rate) push(`  rate_limit  = ${net.options.rate}`);
+      push('}');
+    }
+
+    // Cloud-init
+    const ipConfigKeys = Object.keys(config).filter(k => /^ipconfig\d+$/.test(k)).sort();
+    if (cloudInit.drive || ipConfigKeys.length > 0) {
+      push('');
+      push('initialization {');
+      if (cloudInit.drive) {
+        push(`  datastore_id = ${this.hclString(cloudInit.drive.datastore)}`);
+        push(`  interface    = ${this.hclString(cloudInit.drive.key)}`);
+      }
+      for (const key of ipConfigKeys) {
+        const ip = this.parsePropertyString(config[key]).options;
+        consumed.add(key);
+        push('  ip_config {');
+        if (ip.ip) {
+          push('    ipv4 {');
+          push(`      address = ${this.hclString(ip.ip)}`);
+          if (ip.gw) push(`      gateway = ${this.hclString(ip.gw)}`);
+          push('    }');
+        }
+        if (ip.ip6) {
+          push('    ipv6 {');
+          push(`      address = ${this.hclString(ip.ip6)}`);
+          if (ip.gw6) push(`      gateway = ${this.hclString(ip.gw6)}`);
+          push('    }');
+        }
+        push('  }');
+      }
+      if (config.nameserver || config.searchdomain) {
+        push('  dns {');
+        if (take('searchdomain') !== undefined) push(`    domain  = ${this.hclString(config.searchdomain)}`);
+        if (take('nameserver') !== undefined) {
+          const servers = String(config.nameserver).split(/\s+/).filter(Boolean);
+          push(`    servers = [${servers.map(s => this.hclString(s)).join(', ')}]`);
+        }
+        push('  }');
+      }
+      if (take('ciuser') !== undefined) {
+        push('  user_account {');
+        push(`    username = ${this.hclString(config.ciuser)}`);
+        push('    # password/keys are not exported by the Proxmox API; set them here if needed');
+        push('  }');
+      }
+      consumed.add('cipassword');
+      consumed.add('sshkeys');
+      push('}');
+    }
+
+    const unmapped = Object.keys(config).filter(k => !consumed.has(k)).sort();
+    if (unmapped.length > 0) {
+      push('');
+      push(`# Not mapped automatically (configure manually if needed): ${unmapped.join(', ')}`);
+    }
+    lines.push('}');
+
+    lines.push('');
+    lines.push(`import {`);
+    lines.push(`  to = proxmox_virtual_environment_vm.${label}`);
+    lines.push(`  id = ${this.hclString(`${node}/${vmid}`)}`);
+    lines.push(`}`);
+    return lines.join('\n');
+  }
+
+  terraformForLxc(node, vmid, config) {
+    const consumed = new Set(['digest', 'pending', 'lxc']);
+    const take = (key) => { consumed.add(key); return config[key]; };
+
+    const label = `ct_${vmid}_${this.hclLabel(config.hostname, 'unnamed')}`;
+    const lines = [`resource "proxmox_virtual_environment_container" "${label}" {`];
+    const push = (line) => lines.push(line ? `  ${line}` : '');
+
+    push(`node_name     = ${this.hclString(node)}`);
+    push(`vm_id         = ${vmid}`);
+    if (take('description') !== undefined) push(`description   = ${this.hclString(config.description)}`);
+    if (take('tags') !== undefined) {
+      const tags = String(config.tags).split(/[;,]/).filter(Boolean);
+      push(`tags          = [${tags.map(t => this.hclString(t)).join(', ')}]`);
+    }
+    push(`unprivileged  = ${take('unprivileged') === 1 || config.unprivileged === '1' ? 'true' : 'false'}`);
+    push(`start_on_boot = ${take('onboot') ? 'true' : 'false'}`);
+
+    if (take('features') !== undefined) {
+      const features = this.parsePropertyString(config.features).options;
+      push('');
+      push('features {');
+      if (features.nesting === '1') push('  nesting = true');
+      if (features.fuse === '1') push('  fuse    = true');
+      if (features.keyctl === '1') push('  keyctl  = true');
+      push('}');
+    }
+
+    push('');
+    push('cpu {');
+    push(`  cores = ${parseInt(take('cores'), 10) || 1}`);
+    if (take('arch') !== undefined) push(`  architecture = ${this.hclString(config.arch)}`);
+    push('}');
+
+    push('');
+    push('memory {');
+    push(`  dedicated = ${parseInt(take('memory'), 10) || 512}`);
+    push(`  swap      = ${parseInt(take('swap'), 10) || 0}`);
+    push('}');
+
+    if (take('rootfs') !== undefined) {
+      const rootfs = this.parsePropertyString(config.rootfs);
+      push('');
+      push('disk {');
+      if (rootfs.leading) push(`  datastore_id = ${this.hclString(rootfs.leading.split(':')[0])}`);
+      const sizeGB = rootfs.options.size ? this.sizeToGB(rootfs.options.size) : null;
+      if (sizeGB) push(`  size         = ${sizeGB}`);
+      push('}');
+    }
+
+    for (const key of Object.keys(config).sort()) {
+      if (!/^mp\d+$/.test(key)) continue;
+      const mp = this.parsePropertyString(config[key]);
+      consumed.add(key);
+      push('');
+      push('mount_point {');
+      if (mp.leading) push(`  volume = ${this.hclString(mp.leading)}`);
+      if (mp.options.size) push(`  size   = ${this.hclString(mp.options.size)}`);
+      if (mp.options.mp) push(`  path   = ${this.hclString(mp.options.mp)}`);
+      push('}');
+    }
+
+    const netKeys = Object.keys(config).filter(k => /^net\d+$/.test(k)).sort();
+    const ipConfigs = [];
+    for (const key of netKeys) {
+      const net = this.parsePropertyString(config[key]).options;
+      consumed.add(key);
+      push('');
+      push('network_interface {');
+      if (net.name) push(`  name        = ${this.hclString(net.name)}`);
+      if (net.bridge) push(`  bridge      = ${this.hclString(net.bridge)}`);
+      if (net.hwaddr) push(`  mac_address = ${this.hclString(net.hwaddr)}`);
+      if (net.tag) push(`  vlan_id     = ${parseInt(net.tag, 10)}`);
+      if (net.firewall === '1') push('  firewall    = true');
+      if (net.mtu) push(`  mtu         = ${parseInt(net.mtu, 10)}`);
+      if (net.rate) push(`  rate_limit  = ${net.rate}`);
+      push('}');
+      ipConfigs.push({ ip: net.ip, gw: net.gw, ip6: net.ip6, gw6: net.gw6 });
+    }
+
+    push('');
+    push('initialization {');
+    if (take('hostname') !== undefined) push(`  hostname = ${this.hclString(config.hostname)}`);
+    for (const ip of ipConfigs) {
+      if (!ip.ip && !ip.ip6) continue;
+      push('  ip_config {');
+      if (ip.ip) {
+        push('    ipv4 {');
+        push(`      address = ${this.hclString(ip.ip)}`);
+        if (ip.gw) push(`      gateway = ${this.hclString(ip.gw)}`);
+        push('    }');
+      }
+      if (ip.ip6) {
+        push('    ipv6 {');
+        push(`      address = ${this.hclString(ip.ip6)}`);
+        if (ip.gw6) push(`      gateway = ${this.hclString(ip.gw6)}`);
+        push('    }');
+      }
+      push('  }');
+    }
+    if (config.nameserver || config.searchdomain) {
+      push('  dns {');
+      if (take('searchdomain') !== undefined) push(`    domain  = ${this.hclString(config.searchdomain)}`);
+      if (take('nameserver') !== undefined) {
+        const servers = String(config.nameserver).split(/\s+/).filter(Boolean);
+        push(`    servers = [${servers.map(s => this.hclString(s)).join(', ')}]`);
+      }
+      push('  }');
+    }
+    push('}');
+
+    push('');
+    push('operating_system {');
+    push('  # The source template is not recorded in the container config and cannot be');
+    push('  # read back from the Proxmox API. This placeholder keeps the config valid;');
+    push('  # set the real template if you later recreate the container.');
+    push('  template_file_id = "local:vztmpl/CHANGE_ME.tar.zst"');
+    if (take('ostype') !== undefined) push(`  type             = ${this.hclString(config.ostype)}`);
+    push('}');
+
+    push('');
+    push('lifecycle {');
+    push('  # template_file_id is a ForceNew attribute the API cannot report, so the');
+    push('  # placeholder above would otherwise force a destroy/recreate on import.');
+    push('  # Ignoring it lets you adopt the running container in place.');
+    push('  ignore_changes = [operating_system]');
+    push('}');
+
+    const unmapped = Object.keys(config).filter(k => !consumed.has(k)).sort();
+    if (unmapped.length > 0) {
+      push('');
+      push(`# Not mapped automatically (configure manually if needed): ${unmapped.join(', ')}`);
+    }
+    lines.push('}');
+
+    lines.push('');
+    lines.push(`import {`);
+    lines.push(`  to = proxmox_virtual_environment_container.${label}`);
+    lines.push(`  id = ${this.hclString(`${node}/${vmid}`)}`);
+    lines.push(`}`);
+    return lines.join('\n');
+  }
+
+  async generateTerraform(nodeFilter, vmidFilter, typeFilter = 'all', includeProvider = true) {
+    try {
+      const safeNode = nodeFilter ? this.validateNodeName(nodeFilter) : null;
+      const safeVMID = vmidFilter ? this.validateVMID(vmidFilter) : null;
+      const safeType = ['qemu', 'lxc', 'all'].includes(typeFilter) ? typeFilter : 'all';
+
+      // Discover targets
+      const targets = [];
+      if (safeNode) {
+        if (safeType === 'all' || safeType === 'qemu') {
+          const vms = await this.proxmoxRequest(`/nodes/${safeNode}/qemu`);
+          targets.push(...(vms || []).map(vm => ({ node: safeNode, vmid: String(vm.vmid), type: 'qemu' })));
+        }
+        if (safeType === 'all' || safeType === 'lxc') {
+          const cts = await this.proxmoxRequest(`/nodes/${safeNode}/lxc`);
+          targets.push(...(cts || []).map(ct => ({ node: safeNode, vmid: String(ct.vmid), type: 'lxc' })));
+        }
+      } else {
+        const nodes = await this.proxmoxRequest('/nodes');
+        for (const node of nodes || []) {
+          if (safeType === 'all' || safeType === 'qemu') {
+            const vms = await this.proxmoxRequest(`/nodes/${node.node}/qemu`);
+            targets.push(...(vms || []).map(vm => ({ node: node.node, vmid: String(vm.vmid), type: 'qemu' })));
+          }
+          if (safeType === 'all' || safeType === 'lxc') {
+            const cts = await this.proxmoxRequest(`/nodes/${node.node}/lxc`);
+            targets.push(...(cts || []).map(ct => ({ node: node.node, vmid: String(ct.vmid), type: 'lxc' })));
+          }
+        }
+      }
+
+      const selected = safeVMID ? targets.filter(t => t.vmid === safeVMID) : targets;
+      if (selected.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: safeVMID
+              ? `❌ No ${safeType === 'all' ? 'VM or container' : safeType} with ID ${safeVMID} found${safeNode ? ` on node ${safeNode}` : ''}.`
+              : `No guests found matching the given filters.`
+          }]
+        };
+      }
+
+      const blocks = [];
+      if (includeProvider !== false) {
+        blocks.push(this.terraformProviderBlock());
+      }
+      for (const target of selected.sort((a, b) => parseInt(a.vmid, 10) - parseInt(b.vmid, 10))) {
+        const config = await this.proxmoxRequest(`/nodes/${target.node}/${target.type}/${target.vmid}/config`);
+        blocks.push(target.type === 'qemu'
+          ? this.terraformForQemu(target.node, target.vmid, config || {})
+          : this.terraformForLxc(target.node, target.vmid, config || {}));
+      }
+
+      let output = `🏗️ **Terraform/OpenTofu configuration** (${selected.length} resource${selected.length === 1 ? '' : 's'}, bpg/proxmox provider)\n\n`;
+      output += '```hcl\n' + blocks.join('\n\n') + '\n```\n\n';
+      output += `**Usage**:\n`;
+      output += `1. Save as \`main.tf\` and run \`terraform init\` (or \`tofu init\`)\n`;
+      output += `2. Set the token: \`export TF_VAR_proxmox_api_token='user@realm!tokenid=uuid'\`\n`;
+      output += `3. Run \`terraform plan\` — the \`import\` blocks adopt the existing guests without recreating them\n`;
+      output += `4. Review the diff carefully before \`terraform apply\`; unmapped options are listed in comments\n`;
+
+      return {
+        content: [{ type: 'text', text: output }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: `❌ **Failed to generate Terraform configuration**\n\nError: ${error.message}`
         }]
       };
     }
