@@ -173,6 +173,7 @@ To run the Docker image instead:
 
 ```bash
 codex mcp add proxmox \
+    docker \
   --env PROXMOX_HOST=YOUR_PROXMOX_HOST \
   --env PROXMOX_TOKEN_VALUE=YOUR_TOKEN_SECRET \
   -- docker run -i --rm \
