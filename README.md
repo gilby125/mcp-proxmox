@@ -21,12 +21,22 @@ Based on the original Python implementation by [canvrno/ProxmoxMCP](https://gith
 - Safety rails: optional TLS verification, node/VMID allowlists, and a protection-flag check that blocks deleting protected guests
 - Built on the official MCP SDK
 
+## Quick navigation
+
+- [Install or run the server](#installation)
+- [Configure credentials and permissions](#configuration)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [Browse tools and Terraform export](#available-tools)
+- [Resources, prompts, and structured output](#resources-and-prompts)
+- [Testing and development](#testing)
+- [Troubleshooting](#troubleshooting)
+
 ## Installation
 
 ### Prerequisites
 
 - Node.js 20+ and npm
-- A Proxmox VE server and an API token (see [API Token Setup](#proxmox-api-token-setup))
+- A Proxmox VE server and an API token (see [Create a Proxmox API token](#create-a-proxmox-api-token))
 
 ### Setup
 
@@ -56,7 +66,8 @@ docker run -i --rm \
 
 ## Configuration
 
-The server is configured entirely through environment variables:
+The server is configured through environment variables. The only required
+values are the Proxmox host and API token secret:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -70,11 +81,53 @@ The server is configured entirely through environment variables:
 | `PROXMOX_NODE_ALLOWLIST` | no | — | Comma-separated node names the server may touch; empty means no restriction |
 | `PROXMOX_VMID_ALLOWLIST` | no | — | Comma-separated VMIDs the server may touch; empty means no restriction |
 
-There are two ways to provide them:
+### Create a Proxmox API token
 
-### Option 1: env block in your MCP client config (recommended)
+1. In the Proxmox web UI, go to **Datacenter -> Permissions -> API Tokens -> Add**.
+2. Choose a user (for example, `root@pam`) and a Token ID (for example, `mcp-server`).
+3. Copy the secret immediately; Proxmox displays it only once.
+4. Set the Token ID as `PROXMOX_TOKEN_NAME` and the secret as `PROXMOX_TOKEN_VALUE`.
 
-For Claude Desktop, edit the config file (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, Linux: `~/.config/Claude/claude_desktop_config.json`, Windows: `%APPDATA%\Claude\claude_desktop_config.json`):
+Basic (read-only) mode works with minimal token permissions. Elevated mode needs
+roles covering `Sys.Audit`, `VM.Monitor`, `VM.Console`, `VM.Allocate`,
+`VM.PowerMgmt`, `VM.Snapshot`, `VM.Backup`, `VM.Config.*`, `Datastore.Audit`,
+and `Datastore.Allocate`, depending on which tools you use.
+
+### Choose a permission level
+
+Basic mode (`PROXMOX_ALLOW_ELEVATED=false`, the default) allows read
+operations: listing nodes, VMs, containers, storage, cluster status, templates,
+and generating Terraform.
+
+Elevated mode (`PROXMOX_ALLOW_ELEVATED=true`) additionally enables tools that
+can create, modify, and permanently delete VMs, containers, snapshots, backups,
+disks, and network interfaces, as well as execute commands inside guests. Only
+enable it if you understand and accept those risks.
+
+### Provide credentials
+
+You can set credentials in your MCP client configuration, or place them in a
+`.env` file one directory above the cloned repository. The server loads this
+file from `../.env` relative to `index.js`, keeping secrets outside the repo:
+
+```text
+/home/user/
+├── .env
+└── mcp-proxmox/
+    └── index.js
+```
+
+```bash
+# /home/user/.env
+PROXMOX_HOST=your-proxmox-ip-or-hostname
+PROXMOX_USER=root@pam
+PROXMOX_TOKEN_NAME=mcp-server
+PROXMOX_TOKEN_VALUE=your-token-secret
+PROXMOX_ALLOW_ELEVATED=false
+```
+
+Alternatively, provide the values in the MCP client's `env` block. For
+example, in Claude Desktop, edit `claude_desktop_config.json`:
 
 ```json
 {
@@ -94,42 +147,56 @@ For Claude Desktop, edit the config file (macOS: `~/Library/Application Support/
 }
 ```
 
-Restart the client after editing, then test by asking: "List my Proxmox VMs".
+## Connect an MCP client
 
-### Option 2: .env file in the parent directory of the installation
+Restart the client after configuring the server, then test by asking: "List my
+Proxmox VMs".
 
-The server loads `.env` from `../.env` relative to `index.js` — i.e. the directory above the cloned repo (kept outside the repo so the secret cannot be committed):
+### Claude Desktop
 
-```
-/home/user/
-├── .env             <- environment file goes here
-└── mcp-proxmox/
-    └── index.js     <- loads ../.env from here
-```
+Config locations: macOS `~/Library/Application Support/Claude/claude_desktop_config.json`,
+Linux `~/.config/Claude/claude_desktop_config.json`, Windows
+`%APPDATA%\Claude\claude_desktop_config.json`. Use the configuration example
+above and restart Claude Desktop.
+
+### Codex
+
+Codex CLI and the Codex editor extension share MCP configuration. From this
+repository, register the local server with:
 
 ```bash
-# /home/user/.env
-PROXMOX_HOST=your-proxmox-ip-or-hostname
-PROXMOX_USER=root@pam
-PROXMOX_TOKEN_NAME=mcp-server
-PROXMOX_TOKEN_VALUE=your-token-secret
-PROXMOX_ALLOW_ELEVATED=false
+codex mcp add proxmox -- node "$PWD/index.js"
+codex mcp list
 ```
 
-### Proxmox API Token Setup
+To run the Docker image instead:
 
-1. Proxmox web UI -> Datacenter -> Permissions -> API Tokens -> Add
-2. Pick a user (e.g. `root@pam`) and a Token ID (e.g. `mcp-server`)
-3. Copy the secret immediately — it is shown only once
-4. Use the Token ID as `PROXMOX_TOKEN_NAME` and the secret as `PROXMOX_TOKEN_VALUE`
+```bash
+codex mcp add proxmox \
+  --env PROXMOX_HOST=YOUR_PROXMOX_HOST \
+  --env PROXMOX_TOKEN_VALUE=YOUR_TOKEN_SECRET \
+  -- docker run -i --rm \
+    -e PROXMOX_HOST \
+    -e PROXMOX_TOKEN_VALUE \
+    mcp-proxmox:latest
+```
 
-Permissions: basic (read-only) mode works with minimal token permissions. Elevated mode needs roles covering `Sys.Audit`, `VM.Monitor`, `VM.Console`, `VM.Allocate`, `VM.PowerMgmt`, `VM.Snapshot`, `VM.Backup`, `VM.Config.*`, `Datastore.Audit`, `Datastore.Allocate`, depending on which tools you use.
+Set credentials as described in [Provide credentials](#provide-credentials),
+then restart the Codex session. To remove the server, run
+`codex mcp remove proxmox`.
 
-### Permission Levels
+### GitHub Copilot
 
-Basic mode (`PROXMOX_ALLOW_ELEVATED=false`, the default) allows only read operations: listing nodes, VMs, containers, storage, cluster status, templates, and generating Terraform.
+This repository includes a portable `.mcp.json` for GitHub Copilot CLI and
+compatible Copilot clients. It launches `index.js` from the workspace root.
+In VS Code, open the repo, use Copilot Chat in Agent mode, and enable `proxmox`
+in the MCP tools picker. Use **MCP: List Servers** to inspect startup errors.
 
-Elevated mode (`PROXMOX_ALLOW_ELEVATED=true`) additionally enables the write tools that can create, modify, and permanently delete VMs, containers, snapshots, backups, disks, and network interfaces, and execute commands inside guests. Only enable it if you understand and accept those risks.
+The `.mcp.json` contains no credentials. Set them as described in
+[Provide credentials](#provide-credentials), or in the client's environment.
+Restart the Copilot session after changing credentials or server configuration.
+For a personal Copilot CLI setup, copy the server entry to
+`~/.copilot/mcp-config.json` and replace `index.js` with its absolute path.
 
 ## Available Tools
 

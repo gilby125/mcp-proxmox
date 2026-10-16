@@ -21,10 +21,16 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "node-fetch": "^3.3.2"
   },
-  "keywords": ["mcp", "proxmox", "virtualization", "vm", "devops"],
+  "keywords": [
+    "mcp",
+    "proxmox",
+    "virtualization",
+    "vm",
+    "devops"
+  ],
   "author": "Dev Server Setup",
   "license": "MIT"
 }

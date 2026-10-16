@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "proxmox": {
+      "type": "local",
+      "command": "node",
+      "args": ["index.js"],
+      "tools": ["*"]
+    }
+  }
+}
