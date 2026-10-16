@@ -159,6 +159,21 @@ Linux `~/.config/Claude/claude_desktop_config.json`, Windows
 `%APPDATA%\Claude\claude_desktop_config.json`. Use the configuration example
 above and restart Claude Desktop.
 
+### Claude Code
+
+Claude Code uses `.mcp.json` at the repository root for project-scoped MCP
+servers. This checkout does not include that file. To create the configuration,
+run these commands from the repository root:
+
+```bash
+claude mcp add --scope project proxmox -- node "$PWD/index.js"
+claude mcp list
+```
+
+Review and approve the project server when prompted. Provide credentials as
+described in [Provide credentials](#provide-credentials); do not commit secrets
+to `.mcp.json`.
+
 ### Codex
 
 Codex CLI and the Codex editor extension share MCP configuration. From this
@@ -189,6 +204,22 @@ then restart the Codex session. To remove the server, run
 
 #### Copilot CLI
 
+Copilot CLI reads `~/.copilot/mcp-config.json`, using a top-level `mcpServers`
+object. Add the server with an absolute path to `index.js`:
+
+```json
+{
+  "mcpServers": {
+    "proxmox": {
+      "type": "local",
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-proxmox/index.js"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
 This repository includes two GitHub Copilot CLI configuration templates:
 
 - [Host](.copilot/host/mcp-config.json): runs Node.js directly. Run `npm install`
@@ -198,10 +229,12 @@ This repository includes two GitHub Copilot CLI configuration templates:
   stdio and forwards all nine Proxmox environment variables. Build the image
   first with `docker build -t mcp-proxmox:latest .`.
 
-Both templates include all supported environment variables. Fill in
-`PROXMOX_HOST`, `PROXMOX_TOKEN_NAME`, and `PROXMOX_TOKEN_VALUE` in the selected
-template's `env` block and adjust the optional settings as needed. Do not
-commit real credentials.
+Both templates include all supported environment variables. For a persistent
+setup, merge the selected `proxmox` entry into `mcpServers` in
+`~/.copilot/mcp-config.json`, preserving any other configured servers.
+Fill in the template's `env` values locally, or remove the placeholder entries
+to inherit those values from the client's environment. Do not commit real
+credentials.
 
 From the repository root, load **one** template for a Copilot CLI session:
 
@@ -213,57 +246,30 @@ copilot --additional-mcp-config @.copilot/host/mcp-config.json
 copilot --additional-mcp-config @.copilot/docker/mcp-config.json
 ```
 
-These nested templates are not loaded automatically. For a persistent personal
-setup, merge the selected `proxmox` entry into `mcpServers` in
-`$COPILOT_HOME/mcp-config.json`, or `~/.copilot/mcp-config.json` if
-`COPILOT_HOME` is not set, preserving any other configured servers. Restart the
-Copilot session after changing credentials or server configuration.
+> Note: These nested templates are not loaded automatically.
 
-#### VS Code Copilot (global, across workspaces)
+#### Copilot in VS Code
 
-Current VS Code versions support a **Copilot Global** configuration shared
-with Copilot CLI. This is a personal, user-level configuration, not a file
-that must be added to every repository.
+This repository includes two templates:
 
-1. Prepare **one** of the host or Docker templates above. For the host version,
-   install dependencies and use an absolute path to `index.js`, not
-   `${workspaceFolder}`: the server must work when another project is open.
-   For Docker, build `mcp-proxmox:latest` first.
-2. In VS Code, open or create the global file:
-   - If `COPILOT_HOME` is set, use `mcp-config.json` inside that directory.
-   - Otherwise, use `~/.copilot/mcp-config.json` on Linux/macOS, or
-     `%USERPROFILE%\.copilot\mcp-config.json` on Windows.
-3. For a new file, copy the entire selected template. For an existing file,
-   merge only its `proxmox` entry into the existing `mcpServers` object;
-   preserve other servers. Keep `"type": "local"` and the template's `env`
-   block. The Docker version also needs all the `-e` arguments so the
-   container receives those variables. Fill in the host and token details
-   locally; do not commit credentials.
-4. Save the file. Open the Command Palette (`Ctrl+Shift+P` on Linux/Windows,
-   `Cmd+Shift+P` on macOS), run **MCP: List Servers**, select `proxmox`, and
-   start or restart it. Review any trust prompt before approving it. Use the
-   server's output to diagnose startup errors.
-5. In Copilot Chat, select Agent mode and use **Configure Tools** to enable
-   the Proxmox tools you want available.
+- [Host](.vscode/host/mcp.json): runs `${workspaceFolder}/index.js`. Run
+  `npm install` first.
+- [Docker](.vscode/docker/mcp.json): runs `mcp-proxmox:latest` and forwards all
+  nine Proxmox environment variables. Build the image first.
 
-You can also use **MCP: Add Server** -> **Command (stdio)** and select
-**Copilot Global** when asked where to save the configuration, then edit the
-generated entry to match your chosen template.
+For this workspace, copy **one** template to `.vscode/mcp.json`. For all
+workspaces, run **MCP: Open User Configuration** and merge the template's
+`proxmox` entry into `servers`; for the host template, replace
+`${workspaceFolder}/index.js` with an absolute path. Then enable `proxmox` in
+Copilot Chat's Agent mode tools picker. Use **MCP: List Servers** to start the
+server and inspect startup errors.
 
-**VS Code user-profile alternative:** If your VS Code version does not offer
-**Copilot Global**, or you want a configuration specific to the current
-VS Code profile, run **MCP: Open User Configuration**. This opens the profile's
-`mcp.json`; it is global across workspaces using that profile. Merge the
-selected template with these format changes:
+Neither client configuration needs to contain credentials. Set them as
+described in [Provide credentials](#provide-credentials), or in the client's
+environment. The host server can load the parent-directory `.env` file;
+Docker instead needs the environment variables forwarded into the container.
+Restart the client or server after changing credentials or configuration.
 
-- Rename the top-level `mcpServers` key to `servers`.
-- Change the `proxmox` entry's `"type": "local"` to `"type": "stdio"`.
-- Omit the CLI-specific `"tools": ["*"]` field; choose tools in Copilot Chat.
-- Keep `command`, `args`, and `env` unchanged, including all nine environment
-  variables and the absolute host path or Docker forwarding flags.
-
-Configure `proxmox` in only one of these locations to avoid duplicate entries.
-Do not use `.vscode/mcp.json` for a global setup: that file is workspace-scoped.
 For Remote SSH, WSL, or Dev Containers, ensure Node.js or Docker and the host
 path/image are available where the server runs. To configure a server on a
 remote machine rather than locally, use **MCP: Open Remote User Configuration**.
