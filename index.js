@@ -2956,27 +2956,31 @@ export class ProxmoxServer {
     }
   }
 
-  // Guidance shown when a backup listing comes back empty — the usual PBS causes.
+  // Guidance shown when a backup listing comes back EMPTY (a successful response
+  // with zero backups). Covers the three independent layers that can hide
+  // existing backups — these are distinct systems, so name all three.
   emptyBackupGuidance(safeNode, scope) {
     return (
-      `**If the Proxmox web UI shows backups** (common with Proxmox Backup Server), the API is filtering them out before they reach this tool. Likely causes:\n` +
-      `- **PBS namespace mismatch** — the storage entry in \`/etc/pve/storage.cfg\` points at a different namespace than where the backups live. Point the storage at the correct namespace (\`pvesm set <storage> --namespace <ns>\`).\n` +
-      `- **Token permissions** — listing snapshots needs \`DatastoreReader\` on the datastore/namespace; \`Audit\`/\`PVEAuditor\` alone can leave the content list empty.\n\n` +
+      `**\`${scope}\` returned no backups.** If the Proxmox web UI shows backups here, something is filtering them out before they reach this tool. The three independent causes:\n` +
+      `- **PBS namespace mismatch** — the storage points at a different namespace than where the backups live. Fix: \`pvesm set ${scope} --namespace <ns>\`.\n` +
+      `- **PVE token privileges** — Proxmox VE itself hides backups from the content listing unless your API token has \`Datastore.Allocate\` on \`/storage/${scope}\`, or both \`Datastore.AllocateSpace\` on the storage and \`VM.Backup\` on the guest. \`PVEAuditor\`/\`Audit\` alone is not enough (this is the PVE token, separate from any PBS role).\n` +
+      `- **PBS datastore role** — for a Proxmox Backup Server storage, the PBS credentials configured on the storage (separate again from your PVE token) need \`DatastoreReader\` on the datastore/namespace.\n\n` +
       `Diagnose on the node:\n\`\`\`\npvesh get /nodes/${safeNode}/storage/${scope}/content --content backup\n\`\`\`\n` +
       `If that is also empty, it is a Proxmox-side namespace/permission issue, not this tool.\n`
     );
   }
 
-  // Fetch + render the backups on one storage. Returns { text, count, error }.
+  // Fetch + render the backups on one storage.
+  // Returns { text, count, status } where status is 'ok' | 'empty' | 'error'.
   async renderStorageBackups(safeNode, safeStorage) {
     let backups;
     try {
       backups = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content?content=backup`);
     } catch (error) {
-      return { text: `### ${safeStorage}\n⚠️  could not list: ${error.message}\n`, count: 0, error: true };
+      return { text: `### ${safeStorage}\n⚠️  could not be read: ${error.message}\n`, count: 0, status: 'error' };
     }
     if (!backups || backups.length === 0) {
-      return { text: `### ${safeStorage}\n_(no backups)_\n`, count: 0, error: false };
+      return { text: `### ${safeStorage}\n_(no backups returned)_\n`, count: 0, status: 'empty' };
     }
     backups.sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
     let text = `### ${safeStorage} — ${backups.length} backup(s)\n`;
@@ -3001,7 +3005,7 @@ export class ProxmoxServer {
       if (backup.ctime) text += `  Created: ${new Date(backup.ctime * 1000).toLocaleString()}\n`;
       text += `  Volume: ${backup.volid}\n\n`;
     }
-    return { text, count: backups.length, error: false };
+    return { text, count: backups.length, status: 'ok' };
   }
 
   // List backups. With `storage`, lists that one. Without it, discovers every
@@ -3023,10 +3027,16 @@ export class ProxmoxServer {
       // Single explicit storage.
       if (storage) {
         const safeStorage = this.validateStorageName(storage);
-        const { text, count } = await this.renderStorageBackups(safeNode, safeStorage);
+        const { text, count, status } = await this.renderStorageBackups(safeNode, safeStorage);
         let output = `📦 **Backups on ${safeStorage}**\n\n${text}`;
-        if (count === 0) output += `\n${this.emptyBackupGuidance(safeNode, safeStorage)}`;
-        else output += `**Total**: ${count} backup(s)\n`;
+        if (status === 'empty') {
+          // Only successful-but-empty responses get the namespace/permission guidance.
+          output += `\n${this.emptyBackupGuidance(safeNode, safeStorage)}`;
+        } else if (status === 'error') {
+          output += `\n⚠️  This storage could not be read (see the error above) — this is a connection/permission failure, not an empty backup set.\n`;
+        } else {
+          output += `**Total**: ${count} backup(s)\n`;
+        }
         return { content: [{ type: 'text', text: output }] };
       }
 
@@ -3042,13 +3052,23 @@ export class ProxmoxServer {
 
       let output = `📦 **Backups across all storages on ${safeNode}** (${backupStores.map((s) => s.storage).join(', ')})\n\n`;
       let grand = 0;
+      let anyError = false;
       for (const s of backupStores) {
-        const { text, count } = await this.renderStorageBackups(safeNode, s.storage);
+        const { text, count, status } = await this.renderStorageBackups(safeNode, s.storage);
         output += text + '\n';
-        grand += count;
+        if (status === 'ok') {
+          grand += count;
+        } else if (status === 'error') {
+          anyError = true; // a failed read is NOT an empty result — don't count it, don't give empty-state advice
+        } else {
+          // Scoped guidance per empty storage, even when another storage has backups.
+          output += `${this.emptyBackupGuidance(safeNode, s.storage)}\n`;
+        }
       }
-      output += `**Grand total**: ${grand} backup(s) across ${backupStores.length} storage(s)\n`;
-      if (grand === 0) output += `\n${this.emptyBackupGuidance(safeNode, '<storage>')}`;
+      output += `**Grand total**: ${grand} backup(s) across ${backupStores.length} storage(s)`;
+      output += anyError
+        ? ` — ⚠️ incomplete: one or more storages could not be read (see above).\n`
+        : `\n`;
       return { content: [{ type: 'text', text: output }] };
     } catch (error) {
       return {
