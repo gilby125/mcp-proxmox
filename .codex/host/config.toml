@@ -1,0 +1,15 @@
+[mcp_servers.proxmox]
+enabled = true
+command = "node"
+args = ["/path/to/mcp-proxmox/index.js"]
+
+[mcp_servers.proxmox.env]
+PROXMOX_HOST = ""
+PROXMOX_USER = "root@pam"
+PROXMOX_TOKEN_VALUE = ""
+PROXMOX_TOKEN_NAME = ""
+PROXMOX_ALLOW_ELEVATED = "false"
+PROXMOX_PORT = "8006"
+PROXMOX_VERIFY_TLS = "false"
+PROXMOX_NODE_ALLOWLIST = ""
+PROXMOX_VMID_ALLOWLIST = ""

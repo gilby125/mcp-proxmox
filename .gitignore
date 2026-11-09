@@ -29,7 +29,9 @@ ENV/
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/host/
+!.vscode/docker/
 *.swp
 *.swo
 .project
