@@ -2976,18 +2976,32 @@ export class ProxmoxServer {
       let output = `📦 **Backups on ${safeStorage}**\n\n`;
 
       if (!backups || backups.length === 0) {
-        output += `No backups found on storage \`${safeStorage}\`.\n\n`;
-        output += `**Tip**: Create a backup with \`proxmox_create_backup_lxc\` or \`proxmox_create_backup_vm\`.\n`;
+        output += `No backups returned by the API for storage \`${safeStorage}\`.\n\n`;
+        output += `**If the Proxmox web UI shows backups on this storage** (common with Proxmox Backup Server), the API is filtering them out before they reach this tool. Likely causes:\n`;
+        output += `- **PBS namespace mismatch** — the storage entry in \`/etc/pve/storage.cfg\` points at a different namespace than where the backups live. Point the storage at the correct namespace.\n`;
+        output += `- **Token permissions** — listing snapshots needs \`DatastoreReader\` on the datastore/namespace; \`Audit\`/\`PVEAuditor\` alone can leave the content list empty.\n\n`;
+        output += `Diagnose directly on the node:\n\`\`\`\npvesh get /nodes/${safeNode}/storage/${safeStorage}/content --content backup\n\`\`\`\n`;
+        output += `If that command is also empty, it is a Proxmox-side namespace/permission issue, not this tool.\n\n`;
+        output += `**Otherwise**, create a backup with \`proxmox_create_backup_lxc\` or \`proxmox_create_backup_vm\`.\n`;
       } else {
         // Sort by creation time (newest first)
         backups.sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
 
         for (const backup of backups) {
-          // Parse backup filename to extract VM type and ID
           const filename = backup.volid.split('/').pop();
-          const match = filename.match(/vzdump-(lxc|qemu)-(\d+)-/);
-          const vmType = match ? match[1].toUpperCase() : 'UNKNOWN';
-          const vmId = match ? match[2] : 'N/A';
+          // Prefer the API-provided vmid; fall back to parsing the vzdump filename.
+          // PBS volids (…/vm/100/…, …/ct/100/…) don't match the vzdump pattern,
+          // so the filename regex alone would report UNKNOWN for PBS backups.
+          const nameMatch = filename.match(/vzdump-(lxc|qemu)-(\d+)-/);
+          let vmType = 'UNKNOWN';
+          if (nameMatch) {
+            vmType = nameMatch[1].toUpperCase();
+          } else if (/\/(qemu|vm)\//.test(backup.volid)) {
+            vmType = 'QEMU';
+          } else if (/\/(lxc|ct)\//.test(backup.volid)) {
+            vmType = 'LXC';
+          }
+          const vmId = backup.vmid ?? (nameMatch ? nameMatch[2] : 'N/A');
 
           output += `• **${filename}**\n`;
           output += `  VM ID: ${vmId} (${vmType})\n`;
