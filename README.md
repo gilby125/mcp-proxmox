@@ -94,6 +94,12 @@ For Claude Desktop, edit the config file (macOS: `~/Library/Application Support/
 }
 ```
 
+On Windows, use a full drive path for `args` (forward slashes work in JSON and avoid escaping), for example:
+
+```json
+"args": ["C:/Users/you/mcp-proxmox/index.js"]
+```
+
 Restart the client after editing, then test by asking: "List my Proxmox VMs".
 
 ### Option 2: .env file in the parent directory of the installation
