@@ -70,13 +70,28 @@ export class ProxmoxServer {
     this.proxmoxPort = process.env.PROXMOX_PORT || '8006';
     this.allowElevated = process.env.PROXMOX_ALLOW_ELEVATED === 'true';
 
-    // TLS verification. Proxmox ships with a self-signed certificate, so the
-    // default stays off for out-of-the-box compatibility, but operators with a
-    // proper CA-signed cert can opt into verification with PROXMOX_VERIFY_TLS=true.
-    this.verifyTls = process.env.PROXMOX_VERIFY_TLS === 'true';
-    this.httpsAgent = new https.Agent({
-      rejectUnauthorized: this.verifyTls
-    });
+    // TLS verification is ON by default (secure by default). Operators running
+    // Proxmox's default self-signed certificate have two supported options:
+    //   - PROXMOX_CA_CERT=/path/to/ca.pem   trust a specific CA/cert (recommended)
+    //   - PROXMOX_VERIFY_TLS=false          disable verification entirely (homelab opt-out)
+    // Any value other than the literal "false" keeps verification enabled.
+    this.verifyTls = process.env.PROXMOX_VERIFY_TLS !== 'false';
+    const caCertPath = process.env.PROXMOX_CA_CERT;
+    let caCert;
+    if (caCertPath) {
+      try {
+        caCert = readFileSync(caCertPath);
+      } catch (error) {
+        throw new Error(
+          `PROXMOX_CA_CERT is set to "${caCertPath}" but the file could not be read: ${error.message}`
+        );
+      }
+    }
+    const agentOptions = { rejectUnauthorized: this.verifyTls };
+    if (caCert) {
+      agentOptions.ca = caCert;
+    }
+    this.httpsAgent = new https.Agent(agentOptions);
 
     // Optional allowlists scope which nodes / VMIDs the server may touch.
     // Comma-separated; empty means "no restriction".
