@@ -53,13 +53,55 @@ test('listBackups with an explicit storage lists only that one', async () => {
   assert.match(text, /Total\*\*: 1 backup/);
 });
 
-test('empty storage shows the namespace/permission guidance', async () => {
+test('empty storage shows all three permission layers (PVE token, PBS role, namespace)', async () => {
   const s = elevatedServer();
   s.proxmoxRequest = async () => [];
   const res = await s.listBackups('pve1', 'pbs1');
   const text = res.content[0].text;
   assert.match(text, /namespace mismatch/i);
-  assert.match(text, /DatastoreReader/);
+  assert.match(text, /Datastore\.Allocate/);   // PVE token privilege
+  assert.match(text, /VM\.Backup/);             // PVE token privilege
+  assert.match(text, /DatastoreReader/);        // PBS datastore role
+});
+
+test('aggregate shows scoped guidance for an empty storage even when another has backups', async () => {
+  const s = elevatedServer();
+  s.proxmoxRequest = async (path) => {
+    if (path === '/nodes/pve1/storage') return STORAGES;
+    const name = path.match(/storage\/([^/]+)\/content/)[1];
+    return name === 'local' ? BK.local : []; // pbs1 empty
+  };
+  const res = await s.listBackups('pve1');
+  const text = res.content[0].text;
+  assert.match(text, /Grand total\*\*: 1 backup/);   // local still counted
+  assert.match(text, /`pbs1` returned no backups/);  // scoped guidance for the empty one
+  assert.match(text, /Datastore\.Allocate/);
+});
+
+test('a failed storage read is not treated as empty and marks the total incomplete', async () => {
+  const s = elevatedServer();
+  s.proxmoxRequest = async (path) => {
+    if (path === '/nodes/pve1/storage') return STORAGES;
+    const name = path.match(/storage\/([^/]+)\/content/)[1];
+    if (name === 'pbs1') throw new Error('Proxmox API error: 500 - boom');
+    return BK.local;
+  };
+  const res = await s.listBackups('pve1');
+  const text = res.content[0].text;
+  assert.match(text, /could not be read/);                 // failure surfaced
+  assert.match(text, /incomplete/);                        // total flagged
+  assert.match(text, /Grand total\*\*: 1 backup/);         // failed read not counted as 0-in-total silently
+  // The failed storage must NOT get empty-state (namespace) guidance.
+  assert.doesNotMatch(text, /`pbs1` returned no backups/);
+});
+
+test('single-storage read failure does not emit empty-state guidance', async () => {
+  const s = elevatedServer();
+  s.proxmoxRequest = async () => { throw new Error('Proxmox API error: 500 - boom'); };
+  const res = await s.listBackups('pve1', 'pbs1');
+  const text = res.content[0].text;
+  assert.match(text, /could not be read/);
+  assert.doesNotMatch(text, /namespace mismatch/i);
 });
 
 test('listBackups still requires elevated permissions', async () => {
