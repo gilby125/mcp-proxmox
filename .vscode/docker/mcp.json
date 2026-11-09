@@ -1,0 +1,32 @@
+{
+  "servers": {
+    "proxmox": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "PROXMOX_USER",
+        "-e", "PROXMOX_HOST",
+        "-e", "PROXMOX_TOKEN_NAME",
+        "-e", "PROXMOX_ALLOW_ELEVATED",
+        "-e", "PROXMOX_TOKEN_VALUE",
+        "-e", "PROXMOX_PORT",
+        "-e", "PROXMOX_VERIFY_TLS",
+        "-e", "PROXMOX_NODE_ALLOWLIST",
+        "-e", "PROXMOX_VMID_ALLOWLIST",
+        "mcp-proxmox:latest"
+      ],
+      "env": {
+        "PROXMOX_HOST": "",
+        "PROXMOX_USER": "root@pam",
+        "PROXMOX_TOKEN_VALUE": "",
+        "PROXMOX_TOKEN_NAME": "",
+        "PROXMOX_ALLOW_ELEVATED": "false",
+        "PROXMOX_PORT": "8006",
+        "PROXMOX_VERIFY_TLS": "false",
+        "PROXMOX_NODE_ALLOWLIST": "",
+        "PROXMOX_VMID_ALLOWLIST": ""
+      }
+    }
+  }
+}
