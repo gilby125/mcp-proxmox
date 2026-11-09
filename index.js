@@ -1060,12 +1060,12 @@ export class ProxmoxServer {
         },
         {
           name: 'proxmox_list_backups',
-          description: 'List all backups on a storage (requires elevated permissions)',
+          description: 'List backups on a node (requires elevated permissions). Omit `storage` to list across every backup-capable storage on the node (recommended, so Proxmox Backup Server backups are not missed); pass `storage` to scope to one.',
           inputSchema: {
             type: 'object',
             properties: {
               node: { type: 'string', description: 'Node name' },
-              storage: { type: 'string', description: 'Storage name', default: 'local' }
+              storage: { type: 'string', description: 'Optional. A specific storage to list. If omitted, all backup-capable storages on the node are listed.' }
             },
             required: ['node']
           }
@@ -2956,7 +2956,58 @@ export class ProxmoxServer {
     }
   }
 
-  async listBackups(node, storage = 'local') {
+  // Guidance shown when a backup listing comes back empty — the usual PBS causes.
+  emptyBackupGuidance(safeNode, scope) {
+    return (
+      `**If the Proxmox web UI shows backups** (common with Proxmox Backup Server), the API is filtering them out before they reach this tool. Likely causes:\n` +
+      `- **PBS namespace mismatch** — the storage entry in \`/etc/pve/storage.cfg\` points at a different namespace than where the backups live. Point the storage at the correct namespace (\`pvesm set <storage> --namespace <ns>\`).\n` +
+      `- **Token permissions** — listing snapshots needs \`DatastoreReader\` on the datastore/namespace; \`Audit\`/\`PVEAuditor\` alone can leave the content list empty.\n\n` +
+      `Diagnose on the node:\n\`\`\`\npvesh get /nodes/${safeNode}/storage/${scope}/content --content backup\n\`\`\`\n` +
+      `If that is also empty, it is a Proxmox-side namespace/permission issue, not this tool.\n`
+    );
+  }
+
+  // Fetch + render the backups on one storage. Returns { text, count, error }.
+  async renderStorageBackups(safeNode, safeStorage) {
+    let backups;
+    try {
+      backups = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content?content=backup`);
+    } catch (error) {
+      return { text: `### ${safeStorage}\n⚠️  could not list: ${error.message}\n`, count: 0, error: true };
+    }
+    if (!backups || backups.length === 0) {
+      return { text: `### ${safeStorage}\n_(no backups)_\n`, count: 0, error: false };
+    }
+    backups.sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
+    let text = `### ${safeStorage} — ${backups.length} backup(s)\n`;
+    for (const backup of backups) {
+      const filename = backup.volid.split('/').pop();
+      // Prefer the API-provided vmid; fall back to parsing the vzdump filename.
+      // PBS volids (…/vm/100/…, …/ct/100/…) don't match the vzdump pattern,
+      // so the filename regex alone would report UNKNOWN for PBS backups.
+      const nameMatch = filename.match(/vzdump-(lxc|qemu)-(\d+)-/);
+      let vmType = 'UNKNOWN';
+      if (nameMatch) {
+        vmType = nameMatch[1].toUpperCase();
+      } else if (/\/(qemu|vm)\//.test(backup.volid)) {
+        vmType = 'QEMU';
+      } else if (/\/(lxc|ct)\//.test(backup.volid)) {
+        vmType = 'LXC';
+      }
+      const vmId = backup.vmid ?? (nameMatch ? nameMatch[2] : 'N/A');
+      text += `• **${filename}**\n`;
+      text += `  VM ID: ${vmId} (${vmType})\n`;
+      text += `  Size: ${backup.size ? this.formatBytes(backup.size) : 'N/A'}\n`;
+      if (backup.ctime) text += `  Created: ${new Date(backup.ctime * 1000).toLocaleString()}\n`;
+      text += `  Volume: ${backup.volid}\n\n`;
+    }
+    return { text, count: backups.length, error: false };
+  }
+
+  // List backups. With `storage`, lists that one. Without it, discovers every
+  // backup-capable storage on the node and lists across all of them — so a PBS
+  // user who doesn't know the storage name isn't silently shown only `local`.
+  async listBackups(node, storage) {
     if (!this.allowElevated) {
       return {
         content: [{
@@ -2967,58 +3018,38 @@ export class ProxmoxServer {
     }
 
     try {
-      // Validate inputs
       const safeNode = this.validateNodeName(node);
-      const safeStorage = this.validateStorageName(storage);
 
-      const backups = await this.proxmoxRequest(`/nodes/${safeNode}/storage/${safeStorage}/content?content=backup`);
-
-      let output = `📦 **Backups on ${safeStorage}**\n\n`;
-
-      if (!backups || backups.length === 0) {
-        output += `No backups returned by the API for storage \`${safeStorage}\`.\n\n`;
-        output += `**If the Proxmox web UI shows backups on this storage** (common with Proxmox Backup Server), the API is filtering them out before they reach this tool. Likely causes:\n`;
-        output += `- **PBS namespace mismatch** — the storage entry in \`/etc/pve/storage.cfg\` points at a different namespace than where the backups live. Point the storage at the correct namespace.\n`;
-        output += `- **Token permissions** — listing snapshots needs \`DatastoreReader\` on the datastore/namespace; \`Audit\`/\`PVEAuditor\` alone can leave the content list empty.\n\n`;
-        output += `Diagnose directly on the node:\n\`\`\`\npvesh get /nodes/${safeNode}/storage/${safeStorage}/content --content backup\n\`\`\`\n`;
-        output += `If that command is also empty, it is a Proxmox-side namespace/permission issue, not this tool.\n\n`;
-        output += `**Otherwise**, create a backup with \`proxmox_create_backup_lxc\` or \`proxmox_create_backup_vm\`.\n`;
-      } else {
-        // Sort by creation time (newest first)
-        backups.sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
-
-        for (const backup of backups) {
-          const filename = backup.volid.split('/').pop();
-          // Prefer the API-provided vmid; fall back to parsing the vzdump filename.
-          // PBS volids (…/vm/100/…, …/ct/100/…) don't match the vzdump pattern,
-          // so the filename regex alone would report UNKNOWN for PBS backups.
-          const nameMatch = filename.match(/vzdump-(lxc|qemu)-(\d+)-/);
-          let vmType = 'UNKNOWN';
-          if (nameMatch) {
-            vmType = nameMatch[1].toUpperCase();
-          } else if (/\/(qemu|vm)\//.test(backup.volid)) {
-            vmType = 'QEMU';
-          } else if (/\/(lxc|ct)\//.test(backup.volid)) {
-            vmType = 'LXC';
-          }
-          const vmId = backup.vmid ?? (nameMatch ? nameMatch[2] : 'N/A');
-
-          output += `• **${filename}**\n`;
-          output += `  VM ID: ${vmId} (${vmType})\n`;
-          output += `  Size: ${backup.size ? this.formatBytes(backup.size) : 'N/A'}\n`;
-          if (backup.ctime) {
-            const date = new Date(backup.ctime * 1000);
-            output += `  Created: ${date.toLocaleString()}\n`;
-          }
-          output += `  Volume: ${backup.volid}\n`;
-          output += `\n`;
-        }
-        output += `**Total**: ${backups.length} backup(s)\n`;
+      // Single explicit storage.
+      if (storage) {
+        const safeStorage = this.validateStorageName(storage);
+        const { text, count } = await this.renderStorageBackups(safeNode, safeStorage);
+        let output = `📦 **Backups on ${safeStorage}**\n\n${text}`;
+        if (count === 0) output += `\n${this.emptyBackupGuidance(safeNode, safeStorage)}`;
+        else output += `**Total**: ${count} backup(s)\n`;
+        return { content: [{ type: 'text', text: output }] };
       }
 
-      return {
-        content: [{ type: 'text', text: output }]
-      };
+      // No storage given — aggregate across every backup-capable storage.
+      const stores = await this.proxmoxRequest(`/nodes/${safeNode}/storage`);
+      const backupStores = (stores || []).filter(
+        (s) => typeof s.content === 'string' && s.content.split(',').includes('backup')
+      );
+
+      if (backupStores.length === 0) {
+        return { content: [{ type: 'text', text: `📦 **Backups on ${safeNode}**\n\nNo backup-capable storage found on this node.\n` }] };
+      }
+
+      let output = `📦 **Backups across all storages on ${safeNode}** (${backupStores.map((s) => s.storage).join(', ')})\n\n`;
+      let grand = 0;
+      for (const s of backupStores) {
+        const { text, count } = await this.renderStorageBackups(safeNode, s.storage);
+        output += text + '\n';
+        grand += count;
+      }
+      output += `**Grand total**: ${grand} backup(s) across ${backupStores.length} storage(s)\n`;
+      if (grand === 0) output += `\n${this.emptyBackupGuidance(safeNode, '<storage>')}`;
+      return { content: [{ type: 'text', text: output }] };
     } catch (error) {
       return {
         content: [{
