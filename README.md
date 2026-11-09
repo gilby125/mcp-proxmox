@@ -77,7 +77,8 @@ values are the Proxmox host and API token secret:
 | `PROXMOX_TOKEN_NAME` | no | `mcpserver` | API token ID |
 | `PROXMOX_PORT` | no | `8006` | Proxmox API port |
 | `PROXMOX_ALLOW_ELEVATED` | no | `false` | Set `true` to enable write/destructive tools |
-| `PROXMOX_VERIFY_TLS` | no | `false` | Set `true` to verify the Proxmox TLS certificate (use with a CA-signed cert) |
+| `PROXMOX_VERIFY_TLS` | no | `true` | TLS certificate verification. Enabled by default. Set `false` to disable (self-signed homelab cert, insecure) |
+| `PROXMOX_CA_CERT` | no | — | Path to a CA/cert PEM file to trust (preferred for self-signed certs — keeps verification on) |
 | `PROXMOX_NODE_ALLOWLIST` | no | — | Comma-separated node names the server may touch; empty means no restriction |
 | `PROXMOX_VMID_ALLOWLIST` | no | — | Comma-separated VMIDs the server may touch; empty means no restriction |
 
@@ -145,6 +146,12 @@ example, in Claude Desktop, edit `claude_desktop_config.json`:
     }
   }
 }
+```
+
+On Windows, use a full drive path for `args` (forward slashes work in JSON and avoid escaping), for example:
+
+```json
+"args": ["C:/Users/you/mcp-proxmox/index.js"]
 ```
 
 ## Connect an MCP client
@@ -379,7 +386,7 @@ Continuous integration runs `npm test` on Node 20 and 22 via GitHub Actions (`.g
 
 ## Known Limitations
 
-- TLS verification defaults to off so the server works with Proxmox's self-signed certificate out of the box. Set `PROXMOX_VERIFY_TLS=true` when you have a CA-signed certificate. Do not point the server at untrusted networks with verification disabled.
+- TLS verification is **on by default**. With Proxmox's default self-signed certificate, either trust it with `PROXMOX_CA_CERT=/path/to/ca.pem` (preferred — verification stays on) or disable verification with `PROXMOX_VERIFY_TLS=false` (insecure; do not use on untrusted networks). Upgrade note: earlier versions defaulted verification off, so existing self-signed setups must now set one of these two variables.
 - `proxmox_execute_vm_command`, `proxmox_get_guest_ips`, and `proxmox_set_cloudinit` work for QEMU VMs only. The Proxmox HTTP API has no exec/agent endpoint for LXC containers, so command execution returns a clear "not supported" message for `type: lxc` — use SSH or `pct exec` on the host instead.
 
 ## Troubleshooting
